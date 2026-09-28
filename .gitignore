@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+
+# Run artifacts (see README, Sections 5.4 and 6)
+results/
+batch_run.log
+autorepair/repairs/
