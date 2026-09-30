@@ -127,18 +127,12 @@ def _read(path):
 
 
 def scan_declarations(path):
-    """Return a list of (namespace tuple, name) for every declaration in one file.
+    """Every declaration in one file, as (namespace tuple, name).
 
-    The namespace is tracked by **brace depth**, not by looking for a closing line: a
-    bare `}` ends any function or class body too, so treating every one of them as a
-    namespace close empties the stack part-way through a file and misfiles everything
-    after it. Names are recorded under the namespace they actually declare into, which
-    is not always the one the directory suggests -- a frontend header may legitimately
-    declare into ``ov::op::util``.
-
-    Declarations spanning several lines (a parameter list broken across lines, say) are
-    joined before matching, because the closing `;` is what marks the end and the head
-    of the first line is all the regex needs.
+    The namespace is tracked by brace depth: a bare `}` also ends a function body, so
+    treating each one as a namespace close empties the stack part-way through a file.
+    Names are filed under the namespace they declare into, which the directory does not
+    always reflect. Multi-line declarations are joined before matching.
     """
     records = []
     stack = []          # (namespace, brace depth it was opened at)
@@ -186,14 +180,10 @@ def scan_declarations(path):
 
 
 def build_index(root):
-    """Build the OpenVINO API index.
+    """Returns {"namespaces": {ns: {...}}, "bare": {name: path}}.
 
-    Returns {"namespaces": {ns: {"names", "src", "dir"}}, "bare": {name: path}}.
-
-    Every declaration is filed under the namespace it declares itself into, so a name
-    is reachable by the same qualified path the converters write. Declarations with no
-    enclosing namespace (file-local statics) only land in `bare`, which is what
-    unqualified calls are resolved against.
+    `bare` also carries declarations with no enclosing namespace, which is what
+    unqualified calls resolve against.
     """
     core = os.path.join(root, "src", "core", "include", "openvino")
     frontends = os.path.join(root, "src", "frontends")
@@ -274,10 +264,8 @@ def strip_comments(code):
 
 
 def _read_code(path):
-    """File text with comments and string literals neutralised, line count preserved.
-
-    Brace counting drives the namespace tracking, so a `{` inside a comment or a string
-    must not be counted, and a block comment must not glue two lines together.
+    """File text with comments and strings neutralised, line count preserved, so brace
+    counting is not thrown off by a `{` inside either.
     """
     text = _BLOCK_COMMENT_RE.sub(lambda m: "\n" * m.group(0).count("\n"), _read(path))
     text = _LINE_COMMENT_RE.sub("", text)
@@ -285,10 +273,7 @@ def _read_code(path):
 
 
 def _lookup(name, index):
-    """Resolve a dotted name (`ov.op.v1.Add`) against the indexed namespaces.
-
-    Returns (status, ns, leaf, info, close) or None when no namespace matches.
-    """
+    """Returns (status, ns, leaf, info, close), or None when no namespace matches."""
     ns_map = index["namespaces"]
     ns_list = sorted(ns_map.keys(), key=len, reverse=True)
     for ns in ns_list:
@@ -308,18 +293,13 @@ def _lookup(name, index):
 
 
 def _resolve_qualified(dotted, index):
-    """Resolve a `::`-qualified call, or say it cannot be resolved.
+    """Resolve a `::`-qualified call, or answer unverifiable.
 
-    Only the forms a converter actually writes are expanded: a fully qualified
-    `ov::...` path, an opset-relative `vN::X`, and `common_translators::X`. Anything
-    qualified by a short name (`detail::conv(`, `internal::X(`, `common::X(`) is
-    relative to the namespace of the file the snippet came from, which the verifier
-    never sees; expanding it would land in a same-named namespace somewhere else and
-    report a real API as fabricated, so it answers unverifiable instead.
+    Only `ov::...`, `vN::X` and `common_translators::X` are expanded. A short qualifier
+    (`detail::conv(`) is relative to the file the snippet came from, which the verifier
+    never sees, and expanding it would land in a same-named namespace elsewhere.
 
-    A trailing segment may be a static member call (`ov::op::v0::Constant::create`), so
-    successively shorter prefixes are tried: the class the call hangs off has to exist
-    even when the member itself is not indexed.
+    A trailing segment may be a static member call, so shorter prefixes are tried too.
     """
     parts = dotted.split(".")
     first = parts[0]
@@ -346,11 +326,8 @@ def _resolve_qualified(dotted, index):
 
 
 def _defined_in(code, name):
-    """True when `name` is declared or assigned inside `code` itself.
-
-    A call to a helper the fix defines locally is not a fabricated API. The token in
-    front of the name has to look like a return type or a declaration head, and a
-    statement keyword in that position (`return foo(`) does not count as one.
+    """True when `code` declares `name`, i.e. the call is local rather than fabricated.
+    A statement keyword in the return-type position (`return foo(`) does not count.
     """
     esc = re.escape(name)
     head = (r"(?:auto|void|bool|int|long|short|unsigned|signed|float|double|char|"
@@ -365,12 +342,7 @@ def _defined_in(code, name):
 
 
 def resolve(name, index):
-    """Resolve a call name. Returns (status, ns, leaf, info, close).
-
-    A `::`-qualified call is resolved against the namespaces; a bare call is resolved
-    against the flat name map the scan produced. Bare names that the fixed code itself
-    defines are not API uses and are not reported.
-    """
+    """Returns (status, ns, leaf, info, close), always a 5-tuple."""
     if "::" in name:
         dotted = name.replace("::", ".")
         hit = _resolve_qualified(dotted, index)
@@ -397,12 +369,8 @@ def resolve(name, index):
 
 
 def extract_calls(code, index=None):
-    """Extract API call names from C++ code.
-
-    Two shapes are collected: `::`-qualified calls (`ov::op::v1::Add(`, `v1::Add(`,
-    `common_translators::translate_atan2_util(`), and bare calls to names the index
-    knows about. Method calls (`node.get_ov_inputs()`) are skipped, as are names the
-    snippet defines itself.
+    """`::`-qualified calls plus bare names; method calls and locally defined names are
+    skipped.
     """
     code = strip_comments(code)
     out = []
@@ -453,11 +421,7 @@ def _extract_decl_block(path, name):
 
 
 def describe(name, index):
-    """Return (declaration, docstring, source location) for an existing API.
-
-    The API brief handed to the review LLM is the C++ declaration plus the comment
-    block directly above it; C++ has no docstring object to read.
-    """
+    """Returns (declaration and its comment block, "", source location)."""
     st, ns, leaf, info, _close = resolve(name, index)
     if st != "ok":
         return (None, None, st)

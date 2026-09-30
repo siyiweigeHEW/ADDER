@@ -1,19 +1,5 @@
-"""
-Code expansion module.
-Analyzes operator code to determine if external helper code is needed
-for complete semantic understanding, then retrieves and appends it.
-
-Example:
-    flip.cpp contains:
-        return reverse_op(node);
-    This module detects that reverse_op is defined externally and appends
-    the reverse_op code so the LLM can perform a complete semantic comparison.
-
-Important: helper functions frequently live OUTSIDE the op directory
-(e.g. src/utils.cpp, src/frontends/common_translators/...). Only searching
-the op dir makes converters that delegate to shared helpers look "broken"
-and produces false "Bug" verdicts. Search scope is therefore expanded to the
-frontend src root and the shared common_translators directory.
+"""Code expansion for OpenVINO: find the definitions a converter delegates to and
+append them, so a thin wrapper is not read as missing logic.
 """
 import os
 import re
@@ -21,11 +7,7 @@ from llm_client import global_model
 
 
 def get_dependency_search_dirs(front_op_dir):
-    """Candidate dirs to search for dependency code, ordered by priority.
-
-    Includes: the op dir itself, the frontend src root (utils/core/common),
-    and the cross-frontend common_translators shared directory.
-    """
+    """Candidate dirs to search, in priority order."""
     dirs = []
     seen = set()
 
@@ -54,10 +36,7 @@ def get_dependency_search_dirs(front_op_dir):
 
 
 def analyze_dependencies_with_llm(code_body, front_name):
-    """
-    Use LLM to determine which external helper functions/classes are needed.
-    Returns list of dependency names (empty if none needed).
-    """
+    """External helper names the code needs, or []."""
     prompt = f"""You are an OpenVINO compiler code analysis expert. Please analyze whether the operator code of the following {front_name} frontend requires helper code defined in other files to gain complete semantics:
 
 ```cpp
@@ -106,12 +85,7 @@ def _prev_code_line(content, line_start):
 
 
 def _find_dependency_in(content, clean_name):
-    """Return True if `clean_name` is defined (function/class) in content.
-
-    Distinguishes definitions/declarations from call sites so we return the
-    file that implements the helper, not a file that merely calls it. Handles
-    template return types and (single-line) out-of-line definitions.
-    """
+    """True when `clean_name` is defined here rather than merely called."""
     if re.search(rf'(?:^|\n)\s*(?:class|struct|using|typedef)\s+{re.escape(clean_name)}\b',
                  content, re.MULTILINE):
         return True
@@ -120,9 +94,8 @@ def _find_dependency_in(content, clean_name):
         line_start = content.rfind('\n', 0, start) + 1
         before = content[line_start:start].strip()
         if before == '':
-            # name starts the line: could be a definition whose return type is
-            # on the previous line, or a bare call. Only treat as a definition
-            # when the previous code line looks like a dangling return type.
+            # A name starting the line is a definition only if the previous code
+            # line is a dangling return type.
             prev_line = _prev_code_line(content, line_start)
             if prev_line and not prev_line.endswith(('{', ';', 'return', '=', '(', ',', '->', ')')):
                 if re.search(r'\w[>\])]?$', prev_line):
@@ -145,8 +118,7 @@ def _find_definition_line(lines, clean_name):
             continue
         before = line[:m.start()].strip()
         if before == '':
-            # name starts the line: look at the previous code line for a
-            # dangling return type (skip comments/blank lines)
+            # A name starting the line: check the previous code line.
             j = i - 1
             while j >= 0:
                 prev = lines[j].strip()
@@ -206,16 +178,7 @@ def _extract_braced_block(lines, start):
 
 
 def search_dependency_code(dep_name, front_op_dir, visited_paths=None):
-    """
-    Search for dependency definition across the expanded dir set.
-    Prefers .cpp definitions over .hpp/.h declarations, and returns a bounded
-    snippet of the matching function/class (not the whole file) to keep the
-    expanded prompt small enough to stay under the token limit.
-    `visited_paths`: set of already-appended file paths; matching files there
-    are skipped to avoid re-reading the same file for two deps.
-
-    Returns (snippet, full_path) or (None, None).
-    """
+    """Find `dep_name` across the search dirs; returns (snippet, path) or (None, None)."""
     clean_name = dep_name.split('::')[-1]
     visited_paths = visited_paths if visited_paths is not None else set()
     search_dirs = get_dependency_search_dirs(front_op_dir)
@@ -241,13 +204,7 @@ def search_dependency_code(dep_name, front_op_dir, visited_paths=None):
 
 
 def expand_code_body(code_body, front_name, front_op_dir):
-    """
-    Analyze and expand code body with dependencies.
-
-    Returns:
-        expanded_code: Original code + dependency code (if any)
-        dep_info:     Comma-separated dependency names (empty string if none)
-    """
+    """Returns (expanded_code, dependency names)."""
     dependency_names = analyze_dependencies_with_llm(code_body, front_name)
 
     if not dependency_names:

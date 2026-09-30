@@ -1,16 +1,4 @@
-"""
-Doc retrieval module.
-Searches a per-framework doc dump (URL-line-delimited blocks) for the block
-that best matches an op name.
-
-Robustness fixes over the original implementation:
-  * Parses paddle `name_cn` / `name__cn` URL conventions correctly.
-  * Normalizes names (case / underscores) so cross-framework naming variants
-    match: cum_sum <-> cumsum, reshape2 <-> reshape, batch_norm <-> BatchNormalization,
-    non_zero <-> nonzero, grid_sampler <-> grid_sample, etc.
-  * Keeps an exact word-boundary match as the highest-precision route so short
-    names like `sqrt` never fall through to `rsqrt`.
-"""
+"""Find the block in a framework's doc dump whose operator name best matches."""
 import os
 import re
 import Levenshtein
@@ -75,13 +63,7 @@ def _parse_url_filename(url_line):
 
 
 def get_doc_from_file(file_path, op_name, brand='onnx'):
-    """
-    Retrieve the documentation block matching an operator name from a txt file,
-    choosing the block with the highest similarity score.
-    Prefer an exact word-boundary match (to prevent sqrt from mismatching rsqrt),
-    then fall back to normalized/alias fuzzy matching (to resolve cross-framework
-    naming differences such as cum_sum vs cumsum).
-    """
+    """Highest-scoring block for `op_name`, preferring an exact word-boundary match."""
     if not os.path.exists(file_path):
         return f"Error: {file_path} not found."
 

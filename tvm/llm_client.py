@@ -1,29 +1,11 @@
-"""
-Unified LLM client module for TVM audit system.
-
-Provides:
-- Common interface (model_prediction) for all LLM backends
-- Global proxy that transparently delegates to the selected model
-- setup_model() for interactive model selection at startup
-
-Usage:
-    from llm_client import setup_model, global_model
-
-    setup_model()                     # show menu, pick model
-    result = global_model.model_prediction(prompt)   # call current model
-    name = global_model.model_name    # get current model name
-"""
+"""One client class per provider, behind a shared `global_model` proxy."""
 
 import openai
 
 
-# ============================================================
-# Shared helpers
-# ============================================================
 
-# DeepSeek/thinking models count reasoning tokens against max_tokens; a small
-# budget (8192) can be consumed entirely by "thinking", leaving an empty final
-# answer (finish_reason=length, content=""). 32768 leaves headroom for both.
+# Thinking models count reasoning tokens against max_tokens, so a small budget can be
+# spent entirely on "thinking" and return empty content.
 MAX_OUTPUT_TOKENS = 32768
 
 
@@ -46,9 +28,6 @@ def _retry_prediction(make_call, model_label, max_attempts=1):
     return f"error: {last_error}"
 
 
-# ============================================================
-# Model implementations
-# ============================================================
 
 class DeepseekClient:
     """DeepSeek Chat via OpenAI-compatible API (recommended)."""
@@ -183,9 +162,6 @@ class KamiapiGPTClient:
         )
 
 
-# ============================================================
-# Available model registry
-# ============================================================
 # Add new models here to make them available in the selection menu.
 AVAILABLE_MODELS = {
     "1": ("DeepSeek Chat (Remote API - OpenAI SDK)", DeepseekClient),
@@ -196,16 +172,9 @@ AVAILABLE_MODELS = {
 }
 
 
-# ============================================================
-# Global model proxy
-# ============================================================
 
 class _ModelProxy:
-    """
-    Proxy that delegates all attribute access to the selected model instance.
-    This ensures modules that do `from llm_client import global_model` at import
-    time still see the latest model after setup_model() is called in main().
-    """
+    """Delegates to the selected model, so import-time references stay valid."""
     def __init__(self):
         self._model = None
 
@@ -238,12 +207,7 @@ global_model = _ModelProxy()
 
 
 def setup_model():
-    """
-    Display available models, let the user select one, and set it as the global model.
-
-    Returns:
-        The selected model instance.
-    """
+    """Prompt for a model and install it as the global one."""
     print("\n" + "=" * 50)
     print("            LLM Model Selection")
     print("=" * 50)

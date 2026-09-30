@@ -101,8 +101,7 @@ def _read(path):
 
 
 def scan_defs(filepath):
-    """Return a list of (name, filepath): all top-level `def name` in the file
-    (respecting __all__)."""
+    """All top-level `def name` in the file, respecting __all__."""
     if not os.path.isfile(filepath):
         return []
     try:
@@ -127,15 +126,10 @@ def scan_defs(filepath):
 
 
 def parse_reexports(pkg_dir):
-    """Parse the re-exports of a package's __init__.py, building the set of API names
-    and a name -> source-file map.
+    """Returns (names, src_map) for a package's re-exports.
 
-    Handles two styles:
-      from .binary import (add, subtract, ...)    # explicit list
-      from .conv1d import *                       # star: scan all defs in the imported file
-    Also adds: all top-level defs in every *.py of the package (to cover APIs that are
-    reachable as namespace attributes even if not re-exported).
-    Returns (names:set, src_map:dict[name->filepath]).
+    Handles `from .sub import (a, b)` and `from .sub import *`, and adds the package's
+    own top-level defs, since those are reachable as attributes even without a re-export.
     """
     names = set()
     src_map = {}
@@ -175,11 +169,7 @@ def parse_reexports(pkg_dir):
 
 
 def build_index(root):
-    """Build a namespace -> {names, src, dir} index from the TVM source tree.
-
-    Sub-package directories (with __init__.py) under each seed namespace are indexed
-    too, so `relax.op` also yields `relax.op.image` and so on.
-    """
+    """Namespace -> {names, src, dir}, including sub-packages of each seed namespace."""
     namespaces = {}
 
     def add_ns(ns_name, rel):
@@ -212,10 +202,7 @@ def describe_index(index):
 
 
 def resolve_runtime(name):
-    """Resolve at runtime via inspect (numpy/functools and other importable modules).
-
-    Returns (status, ns, leaf, info, close) -- the same 5-tuple shape as `resolve`.
-    """
+    """Resolve via inspect, for modules that can actually be imported."""
     parts = name.split(".")
     root = RUNTIME_ROOTS.get(parts[0], parts[0])
     try:
@@ -230,18 +217,10 @@ def resolve_runtime(name):
 
 
 def resolve(name, index):
-    """Resolve a dotted API name. Returns (status, ns, leaf, info, close).
+    """Returns (status, ns, leaf, info, close), always a 5-tuple.
 
-    Always a 5-tuple, whatever the status, so callers can unpack unconditionally.
-
-    status: ok / missing / unverifiable
-      ok          the API exists in the namespace
-      missing     the namespace resolved, but the leaf is not in its API list
-      unverifiable the namespace is not indexed, or the intermediate level cannot be
-                   confirmed (to avoid false positives)
-
-    A `missing` verdict is only issued for a namespace in MISSING_STRICT_NS; elsewhere
-    the leaf may simply not have been enumerated.
+    status is ok / missing / unverifiable. `missing` is only issued for a namespace in
+    MISSING_STRICT_NS; elsewhere the leaf may simply not have been enumerated.
     """
     if name in index:
         return ("ok", name, name, index[name], None)
@@ -294,8 +273,7 @@ def describe(name, index):
 
 
 def extract_def_doc(filepath, name):
-    """Extract the signature and docstring of `def name` from the source file.
-    Returns (sig, doc, lineno) or None."""
+    """Returns (signature, docstring, lineno) for `def name`, or None."""
     if not os.path.isfile(filepath):
         return None
     try:

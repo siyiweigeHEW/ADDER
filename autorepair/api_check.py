@@ -39,12 +39,8 @@ _BACKEND_DIRS = ("tvm", "openvino")
 
 
 def _load_backend(subdir):
-    """Load one backend module from its own directory.
-
-    The backends live in `tvm/` and `openvino/` and are both called `api_index`, so they
-    are loaded by path under distinct module names. Importing them as packages would
-    need `autorepair/tvm/__init__.py`, and `autorepair/` is on `sys.path` here, so that
-    would shadow the real `tvm` package for anything running from this directory.
+    """Load a backend by path: both are called `api_index`, and making them importable
+    packages would put `autorepair/tvm` ahead of the real `tvm` on `sys.path`.
     """
     path = os.path.join(_HERE, subdir, "api_index.py")
     spec = importlib.util.spec_from_file_location(f"_api_index_{subdir}", path)
@@ -70,8 +66,7 @@ def get_backend(name=None):
 
 
 def _clean_block(text):
-    """Strip leading/trailing blank lines and trailing whitespace, but preserve the
-    first line's indentation (same as repair.py's clean_block)."""
+    """Trim blank edges, keeping the first line's indentation."""
     lines = text.split("\n")
     while lines and not lines[0].strip():
         lines.pop(0)
@@ -81,15 +76,13 @@ def _clean_block(text):
 
 
 def _extract_code(response):
-    """Extract the first fenced code block from the response (the fence language is not
-    enforced); returns the whole response when there is no fence (same as repair.py)."""
+    """First fenced block, whatever its language tag; the whole response if unfenced."""
     m = CODE_FENCE_RE.search(response)
     return (_clean_block(m.group(1)) + "\n") if m else _clean_block(response) + "\n"
 
 
 def added_lines(original, fixed):
-    """Return the lines added/changed in fixed relative to original (the + lines of the
-    diff)."""
+    """The `+` lines of the diff."""
     orig_lines = original.splitlines()
     fix_lines = fixed.splitlines()
     sm = difflib.SequenceMatcher(a=orig_lines, b=fix_lines, autojunk=False)
@@ -141,8 +134,7 @@ def _parse_verdicts(text):
 
 
 def review_usage(original, fixed, used_apis, index, mod, client, code_lang="python"):
-    """Ask the LLM to review, against the API brief docs, whether there is any misuse.
-    Returns (verdicts, raw_response)."""
+    """Returns (verdicts, raw_response)."""
     added = "\n".join(added_lines(original, fixed)) or fixed
     doc_blocks = []
     for name in used_apis:
@@ -216,8 +208,7 @@ def _format_issue(issue):
 
 
 def build_correction_prompt(original, previous_fixed, issues, code_lang="python"):
-    """Turn the detected API problems into a prompt asking the LLM to output the
-    revised complete code."""
+    """Prompt asking the LLM to re-output the code with the reported problems fixed."""
     issues_text = "\n".join(f"{i + 1}. {_format_issue(it)}" for i, it in enumerate(issues))
     return f"""# Fix the API problems in the previous repair round (autorepair automatic
 verification feedback)

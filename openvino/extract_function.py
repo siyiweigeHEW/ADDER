@@ -2,20 +2,7 @@ import os
 
 
 def get_all_front_converters(front_op_dir_map, target_fronts):
-    """
-    Scan the OpenVINO frontend op directories for .cpp files and extract converter code.
-
-    Args:
-        front_op_dir_map: dict, frontend name -> op directory path
-                          e.g. {'onnx': '/path/to/onnx/op', 'torch': '/path/to/torch/op'}
-        target_fronts: list, frontends to process e.g. ['onnx', 'torch']
-
-    Returns:
-        all_front_converter: dict
-            { front_name: (code_body_dict, name_mapping_dict) }
-            - code_body_dict: { op_identity: file_content }
-            - name_mapping_dict: { op_identity: op_identity }  (identity map)
-    """
+    """Returns {front_name: (code_body_dict, name_mapping_dict)}."""
     all_front_converter = {}
     for front_name in target_fronts:
         front_path = front_op_dir_map.get(front_name)

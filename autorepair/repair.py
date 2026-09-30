@@ -43,8 +43,7 @@ CODE_FENCE_RE = re.compile(r"```[a-zA-Z0-9_-]*\s*\n(.*?)```", re.DOTALL)
 
 
 def clean_block(text):
-    """Strip leading/trailing blank lines and trailing whitespace, but **preserve the
-    first line's indentation** (the first line of a code block may be `    @classmethod`)."""
+    """Trim blank edges, keeping the first line's indentation."""
     lines = text.split("\n")
     while lines and not lines[0].strip():
         lines.pop(0)
@@ -150,13 +149,8 @@ ATTR_CALL_RE = re.compile(r"\battr\.([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 
 
 def check_attr_accessors(original, fixed):
-    """Heuristic check: whether the fixed code introduces `attr.<method>(` calls not
-    used by the original code.
-
-    A frontend attr is usually a dict (`attr.get(...)`); the LLM often fabricates
-    Attrs methods such as `attr.get_int_tuple()`. This check only warns, it does not
-    block — when hit, confirm the method actually exists.
-    Returns the set of newly introduced attr method names.
+    """Warn about `attr.<method>(` calls the original did not make; a frontend attr is a
+    dict, so such methods are usually fabricated. Warns only, does not block.
     """
     orig = set(ATTR_CALL_RE.findall(original))
     new = set(ATTR_CALL_RE.findall(fixed)) - orig
@@ -181,22 +175,15 @@ def find_block(src, block):
 
 
 def patch_path(src_file):
-    """Compute the patch-header path: when the tvm source contains `/python/`, truncate
-    to start at `python/` (source-root-relative path, directly applicable with
-    `patch -p1` from the source root); otherwise strip the leading / and use as-is."""
+    """Source-root-relative path, so the patch applies with `patch -p1`."""
     if "/python/" in src_file:
         return src_file[src_file.index("/python/") + 1:]
     return src_file.lstrip("/")
 
 
 def build_fix_patch(original, fixed, src_file=None):
-    """Generate a unified diff with difflib.
-
-    Prefers to replace the LLM-fixed code back into the real source file (line numbers
-    and context are aligned automatically, producing an applicable patch); when no
-    src-file is given or the snippet does not match, falls back to a snippet-level diff
-    (for reference only).
-    Returns (diff text, whether it is anchored to the real file).
+    """Returns (diff, anchored). Anchored means the fix was written back into the real
+    source file, so the diff carries real line numbers; otherwise it is snippet-local.
     """
     original = original.strip("\n") + "\n"
     fixed = fixed.strip("\n") + "\n"

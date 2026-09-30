@@ -5,7 +5,6 @@ import re
 
 def preprocess_api_map(ori_map, flag):
     final_map = '{'
-    # Extract the content inside the braces
     match_content = re.search(r'\{(.*)\}', ori_map, re.DOTALL)
     content = match_content.group(1) if match_content else ori_map
 
@@ -14,11 +13,9 @@ def preprocess_api_map(ori_map, flag):
         if not line or not (': ' in line):
             continue
 
-        # Remove prefixes like self.
         line = line.replace('self.', '')
         parts = line.split(': ')
         dll_name = parts[0].strip()
-        # Handle the value, strip the trailing comma
         dlc_name = parts[1].strip().rstrip(',')
 
         # --- Core change: handle unquoted keys (e.g., nn.Linear) ---
@@ -27,7 +24,6 @@ def preprocess_api_map(ori_map, flag):
 
         # --- Core change: handle unquoted values (e.g., _linear_module or Add) ---
         if not (dlc_name.startswith("'") or dlc_name.startswith('"')):
-            # If flag is 'func', handle the .get_converter logic
             if flag == 'func':
                 dlc_name = dlc_name.split('.get_converter')[0]
             dlc_name = f"'{dlc_name}'"
@@ -50,7 +46,6 @@ def get_convert_map(source_code):
         matches = re.findall(p, source_code, flags=re.DOTALL)
         if matches:
             target_str = matches[-1]
-            # If it contains get_converter, it is usually a functional mapping
             flag = 'func' if 'get_converter' in target_str else 'map'
             return preprocess_api_map(target_str, flag), flag
 
@@ -80,7 +75,6 @@ def get_function(front_path):
         print(f"[SKIP] the file: {front_path}")
         return None, None
 
-    # eval into a real dict
     try:
         this_front_api_dict = eval(api_convert_map_str)
     except Exception as e:
@@ -97,7 +91,6 @@ def get_function(front_path):
         valid_names.add(str(v))
 
     for node in ast.walk(tree):
-        # Extract function definitions
         if isinstance(node, ast.FunctionDef):
             if node.name in valid_names:
                 op_converter[node.name] = ast.get_source_segment(source_code, node)

@@ -1,23 +1,5 @@
-"""
-Code expansion module for TVM.
-Analyzes operator converter code to determine if external helper code is needed
-for complete semantic understanding, then retrieves and appends it.
-
-Mirrors OPENVINO's code_expander.py approach, adapted for TVM's Python source:
-  * Directory-based search (frontend op dir + frontend root + shared dirs)
-    instead of a fixed file list, so helpers living outside the op dir are found.
-  * AST-based definition extraction (Python's analog of C++ brace matching),
-    returning a bounded source segment (exact class/function/assignment).
-  * visited_paths tracking so a file is read at most once for multiple deps.
-
-Example:
-    class Add(BinaryBase):
-        @classmethod
-        def _impl_v1(cls, bb, inputs, attr, params):
-            return cls.base_impl(bb, inputs, attr, params)
-
-    This module detects BinaryBase is defined externally and appends its code
-    so the LLM can perform a complete semantic comparison.
+"""Code expansion for TVM: find the definitions a converter delegates to and append
+them, so a thin wrapper is not read as missing logic.
 """
 import ast
 import os
@@ -25,11 +7,7 @@ from llm_client import global_model
 
 
 def get_dependency_search_dirs(front_dir):
-    """Candidate dirs to search for dependency code, ordered by priority.
-
-    Includes the frontend op dir itself, its parent (the frontend root, where
-    common.py and shared helpers live), and sibling utils/core/common dirs.
-    """
+    """Candidate dirs to search, in priority order."""
     dirs = []
     seen = set()
 
@@ -50,10 +28,7 @@ def get_dependency_search_dirs(front_dir):
 
 
 def analyze_dependencies_with_llm(code_body, front_name):
-    """
-    Use LLM to determine which external helper classes/functions are needed.
-    Returns list of dependency names (empty if none needed).
-    """
+    """External helper names the code needs, or []."""
     prompt = f"""You are a TVM Relax compiler frontend code analysis expert. Please analyze whether the operator conversion code of the following {front_name} frontend requires helper code defined in other files to gain complete semantics:
 
 ```python
@@ -88,11 +63,7 @@ If not needed, output: `[DEPS]: NONE`
 
 
 def _extract_dependency_snippet(content, clean_name):
-    """Return the source segment defining `clean_name`.
-
-    Handles class definitions, function definitions, and module-level
-    assignments (e.g. np_add = _np.add). Returns None if not found.
-    """
+    """Source segment defining `clean_name`, or None."""
     try:
         tree = ast.parse(content)
     except SyntaxError:
@@ -110,15 +81,7 @@ def _extract_dependency_snippet(content, clean_name):
 
 
 def search_dependency_code(dep_name, front_dir, visited_paths=None):
-    """
-    Search for dependency definition across the expanded dir set.
-    Searches .py files only, in dir priority order. Returns a bounded snippet
-    of the matching class/function/assignment (not the whole file).
-    `visited_paths`: set of already-appended file paths; matching files there
-    are skipped to avoid re-reading the same file for two deps.
-
-    Returns (snippet, full_path) or (None, None).
-    """
+    """Find `dep_name` across the search dirs; returns (snippet, path) or (None, None)."""
     clean_name = dep_name.split('.')[-1]
     visited_paths = visited_paths if visited_paths is not None else set()
     search_dirs = get_dependency_search_dirs(front_dir)
@@ -143,18 +106,7 @@ def search_dependency_code(dep_name, front_dir, visited_paths=None):
 
 
 def expand_code_body(code_body, front_name, front_dir):
-    """
-    Analyze and expand code body with dependencies.
-
-    Args:
-        code_body: Extracted Python function/class body
-        front_name: 'onnx' or 'torch'
-        front_dir: Path to the frontend op directory (e.g. relax/frontend/onnx)
-
-    Returns:
-        expanded_code: Original code + dependency code (if any)
-        dep_info:     Comma-separated dependency names (empty string if none)
-    """
+    """Returns (expanded_code, dependency names)."""
     dependency_names = analyze_dependencies_with_llm(code_body, front_name)
 
     if not dependency_names:

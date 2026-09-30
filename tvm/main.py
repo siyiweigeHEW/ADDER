@@ -22,9 +22,6 @@ from llm_client import setup_model, global_model
 from code_expander import expand_code_body
 
 
-# ============================================================
-# Helper functions
-# ============================================================
 
 def record_detail(detail_file, info):
     with open(detail_file, 'a', encoding='utf-8') as f:
@@ -75,20 +72,15 @@ def get_similar_op_with_text_sim(op_name, target_dict):
     return max_sim_op, max_sim
 
 
-# ============================================================
-# Main flow
-# ============================================================
 
 def main():
     print("=" * 60)
     print("     TVM Frontend Consistency Audit System")
     print("=" * 60)
 
-    # ========== Step 0: Select the LLM ==========
     print("\n[Step 0/5] Select the LLM model...")
     setup_model()
 
-    # ========== Path configuration ==========
     base_dir = r"[your tvm source root]/python/tvm/relax/frontend"
     onnx_doc_path = "[this directory]/docxes/onnxdoc.txt"
     torch_doc_path = "[this directory]/docxes/torchdoc.txt"
@@ -121,7 +113,6 @@ def main():
 
     print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Starting frontend consistency audit...")
 
-    # ========== Step 1: Extract converters ==========
     print(f"\n[{datetime.now().strftime('%H:%M:%S')}] [Step 1/5] Extracting frontend converters...")
     all_front_converter = get_all_front_converters(base_dir, target_fronts=['onnx', 'torch'])
     all_front_name_list = list(all_front_converter.keys())
@@ -162,7 +153,6 @@ def main():
                     source_func_body = all_front_converter[k][0][func_name]
                     target_func_body = all_front_converter[target_front][0][similar_api_name]
 
-                    # ========== Step 2: Code expansion ==========
                     print(f"  [{datetime.now().strftime('%H:%M:%S')}] [Step 2/5] Expanding code...")
                     source_func_body, src_dep_info = expand_code_body(
                         source_func_body, k, front_op_dir_map[k]
@@ -175,7 +165,6 @@ def main():
                               f"{target_front}=[{tgt_dep_info}]")
 
                     try:
-                        # ========== Step 3: First consistency judgment ==========
                         print(f"  [{datetime.now().strftime('%H:%M:%S')}] [Step 3/5] Running first consistency check...")
                         consistency_res, explanation, compare_consistency_prompt = compare_code_consistency(
                             k, source_func_body, target_front, target_func_body
@@ -186,7 +175,6 @@ def main():
                             code_match_flag = 0
                             print(f"  [{datetime.now().strftime('%H:%M:%S')}] [Step 3/5] Result: ❌ NOT equivalent, starting in-depth document analysis...")
 
-                            # ========== Step 4: Document retrieval ==========
                             print(f"  [{datetime.now().strftime('%H:%M:%S')}] [Step 4/5] Retrieving documentation...")
                             doc_map = {'onnx': onnx_doc_path, 'torch': torch_doc_path}
                             doc_path_k = doc_map.get(k, onnx_doc_path)
@@ -195,7 +183,6 @@ def main():
                             doc_content_k = get_doc_from_file(doc_path_k, op_name)
                             doc_content_target = get_doc_from_file(doc_path_target, similar_op_name)
 
-                            # Check whether the documentation was matched successfully
                             if doc_content_k.startswith("Warning:") or doc_content_k.startswith("Error:") or \
                                doc_content_target.startswith("Warning:") or doc_content_target.startswith("Error:"):
                                 doc_match_flag = 8
@@ -217,7 +204,6 @@ def main():
                                                     doc_match_flag)
                                 print(f"  [{datetime.now().strftime('%H:%M:%S')}] [Step 5/5] Skipping document analysis (Flag: {doc_match_flag}).\n")
                             else:
-                                # ========== Step 5: Second document analysis judgment ==========
                                 print(f"  [{datetime.now().strftime('%H:%M:%S')}] [Step 5/5] Running second document analysis...")
                                 final_judgment = analyze_with_docs(
                                     explanation, doc_content_k, doc_content_target,
@@ -234,7 +220,6 @@ def main():
                                     doc_match_flag = 9
                                     inconclusive_count += 1
 
-                                # Save the detailed log
                                 op_pair_info = f"{k}.{op_name} ({func_name}) <--> {target_front}.{similar_op_name} ({similar_api_name})"
                                 detail_log = (f"{'=' * 70}\n"
                                               f"Op Pair: {op_pair_info}\n"
@@ -264,7 +249,6 @@ def main():
                         print(f"  [{datetime.now().strftime('%H:%M:%S')}] [ERROR] LLM comparison failed: {e}")
                         skipped_count += 1
 
-    # Final report
     print("\n" + "=" * 60)
     print("                Final Audit Report")
     print("=" * 60)
