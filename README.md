@@ -15,6 +15,15 @@ Two audit pipelines and one repair component are shipped:
 | `openvino/` | OpenVINO | C++ | onnx / torch / paddle |
 | `autorepair/` | repair and API verification, both tool stacks | | |
 
+## Contents
+
+| Document | Covers |
+|---|---|
+| **this file** | the method, every prompt verbatim, and the walkthrough from a bare checkout to results |
+| [`tvm/README.md`](tvm/README.md) | the TVM pipeline: what it reads, how extraction and expansion work for Python frontends, how to run it |
+| [`openvino/README.md`](openvino/README.md) | the OpenVINO pipeline: what it reads, how extraction and expansion work for C++ frontends, how to run it |
+| [`autorepair/README.md`](autorepair/README.md) | the repair component: inputs, usage, output, and its verification backend |
+
 ---
 
 ## 1. Method
@@ -466,7 +475,9 @@ fix prompt's scope contract, not to this check.
 
 ## 6. Code structure
 
+    README.md                       this file
     tvm/                            audit pipeline, TVM (Python frontends)
+      README.md                     the TVM pipeline in more detail
       main.py                       pipeline: Steps 0-5
       extract_function.py           Step 1  parse convert_map + AST
       code_expander.py              Step 2  dependency expansion (Prompt 2)
@@ -477,9 +488,12 @@ fix prompt's scope contract, not to this check.
       batch_run.py                  batch runner
       run_with_model.py             non-interactive single run
 
-    openvino/                       audit pipeline, OpenVINO (C++ frontends), same layout
+    openvino/                       audit pipeline, OpenVINO (C++ frontends)
+      README.md                     the OpenVINO pipeline in more detail
+      ...                           same module layout as tvm/
 
     autorepair/                     repair component
+      README.md                     inputs, usage, output, verification
       repair.py                     prompt → model → code → patch → verification
       api_check.py                  verification driver
       tvm/api_index.py              index and call extraction for TVM
