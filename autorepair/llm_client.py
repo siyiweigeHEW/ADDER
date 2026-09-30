@@ -1,6 +1,6 @@
 """DeepSeek v4 Flash LLM client with exponential-backoff retry.
 
-Used by repair.py to produce fix patches for TVM frontend converters.
+Used by generate_patch.py to produce fix patches for TVM frontend converters.
 Only dependency at runtime is the `openai` package.
 """
 import logging

@@ -1,0 +1,8 @@
+ONNX Flatten specification (opsets 1/9/11/13/21):
+- Attribute axis, type int, default 1. Let r be the rank of the input tensor.
+- axis must satisfy axis in [-r, r]; negative values count dimensions from the back
+  (axis=-1 refers to the last dimension).
+- Spec text: "The value for axis must be in the range [-r, r], where r is the rank
+  of the input tensor. Negative value means counting dimensions from the back."
+- Output shape = (prod(shape[0:axis]), prod(shape[axis:])), where axis is normalized to [0, r].
+- An out-of-range axis makes the model invalid: onnxruntime rejects it by raising ShapeInferenceError.

@@ -1,0 +1,8 @@
+Root cause (LLM attribution + manual confirmation): the mode whitelist of
+Pad._impl_v2 / _impl_v11 only contains ["constant","edge","reflect"]; a legal
+mode="wrap" from opset 18+ raises OpAttributeInvalid ("Value wrap in attribute 'mode'
+is invalid"); and v11 does not handle the opset-18 axes input (it ignores the 4th
+input and treats pads as full-rank -> dimension-mismatch ValueError).
+onnx.checker / onnx.reference / onnxruntime all accept and correctly run wrap and axes.
+wrap is cyclic padding (topi.nn.circular_pad already exists). The already-supported
+shapes behave correctly and must not change.

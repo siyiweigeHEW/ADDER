@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Manual input -> fix patch generation (frontend converter defect repair).
+"""Manual input -> fix patch generation (TVM / OpenVINO frontend converter defect repair).
 
 Usage:
     python repair.py                          # interactively enter all information
     python repair.py --dry-run                # only build/print the prompt; no LLM call
-    python repair.py --backend <backend> --frontend onnx --op Flatten \
+    python repair.py --backend TVM --frontend onnx --op Flatten \
                      --code-file code.py --doc-file doc.txt --cause-file cause.txt \
-                     --src-file <source-root-relative path of the file to fix>
+                     --src-file python/tvm/relax/frontend/onnx/onnx_frontend.py
 
 Manual inputs:
-    backend   backend name, as listed by the frontend registry
+    backend   backend (TVM / OPENVINO)
     frontend  frontend (onnx / torch / paddle ...)
     op        operator name (e.g., Flatten)
     code      original code to fix (only the parts related to the buggy operator)
@@ -32,32 +32,14 @@ import os
 import re
 import sys
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, _HERE)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# The repository root is needed for `frontends` and `prompts`, but it must come
-# *after* this directory: both trees contain a `llm_client` module and they are not
-# interchangeable, so `autorepair/llm_client.py` has to win the lookup.
-_REPO_ROOT = os.path.dirname(_HERE)
-if _REPO_ROOT not in sys.path:
-    sys.path.append(_REPO_ROOT)
-
-from frontends import (DEFAULT as DEFAULT_BACKEND, available as available_backends,  # noqa: E402
-                       get_frontend)
 from llm_client import DeepseekV4FlashClient  # noqa: E402
 import api_check  # noqa: E402   API existence check + misuse review + correction loop
 
-OUT_BASE = os.path.join(_HERE, "repairs")
+OUT_BASE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "repairs")
 EOF = "EOF"  # end marker for multiline paste
 CODE_FENCE_RE = re.compile(r"```[a-zA-Z0-9_-]*\s*\n(.*?)```", re.DOTALL)
-
-def fence_lang(backend):
-    """Fence language for the prompts, taken from the backend's own declaration.
-
-    Without this the prompt would ask for a python block -- and the extraction would be
-    tuned for one -- even when the converter under repair is C++.
-    """
-    return get_frontend(backend).CODE_LANGUAGE
 
 
 def clean_block(text):
@@ -111,14 +93,13 @@ def build_prompt(backend, frontend, op, code, doc, cause):
     externally by the program."""
     cause_block = cause or ("(not provided) analyze the root cause from the 'Original "
                             "code' and 'Key documentation information' below.")
-    lang = fence_lang(backend)
     return f"""# Fix the defect in the {backend}-{frontend} frontend converter "{op}"
 
 ## 1. Root cause of the defect (attribution)
 {cause_block}
 
 ## 2. Original code (to be fixed; the fix must preserve the full extent of this code)
-```{lang}
+```python
 {code}
 ```
 
@@ -134,21 +115,20 @@ itself. Please follow this contract:
    reorder, rename, or refactor along the way.
 2. Only use operators/interfaces that actually exist in this {backend} version. Prefer
    the concrete implementation approach given in "Key documentation information"; if
-   unsure whether an API exists, fall back to a lower-level API that is definitely
-   available in this version, and note the substitution outside the code block.
+   unsure whether an API exists, use an equivalent low-level implementation (e.g., a
+   topi operator + `bb.emit_te`), and note it outside the code block.
 3. Outside the code block, first explain the root cause and the change in one sentence.
 4. If the information is insufficient to determine the fix, state outside the code block
    what is missing; do not fabricate.
 
-Output format: an explanation outside the code block + a ```{lang} code block
+Output format: an explanation outside the code block + a ```python code block
 (the complete fixed code)
 """
 
 
 def extract_code(response):
-    """Extract the first fenced code block from the response (the fence language is not
-    enforced; preserving the first line's indentation). Returns the whole response when
-    there is no fence."""
+    """Extract the ```python code block from the response (preserving the first line's
+    indentation); return the whole response if there is no fence."""
     m = CODE_FENCE_RE.search(response)
     return (clean_block(m.group(1)) + "\n") if m else clean_block(response) + "\n"
 
@@ -188,9 +168,9 @@ def find_block(src, block):
 
 
 def patch_path(src_file):
-    """Compute the patch-header path: when the path contains `/python/`, truncate to
-    start at `python/` (source-root-relative, directly applicable with `patch -p1` from
-    the source root); otherwise strip the leading / and use as-is."""
+    """Compute the patch-header path: when the tvm source contains `/python/`, truncate
+    to start at `python/` (source-root-relative path, directly applicable with
+    `patch -p1` from the source root); otherwise strip the leading / and use as-is."""
     if "/python/" in src_file:
         return src_file[src_file.index("/python/") + 1:]
     return src_file.lstrip("/")
@@ -228,8 +208,7 @@ def build_fix_patch(original, fixed, src_file=None):
 
 def main():
     ap = argparse.ArgumentParser(description="Manual input -> generate frontend converter fix patch")
-    ap.add_argument("--backend", help="backend under repair "
-                                      f"({', '.join(available_backends())})")
+    ap.add_argument("--backend", help="backend: TVM / OPENVINO")
     ap.add_argument("--frontend", help="frontend: onnx / torch / paddle ...")
     ap.add_argument("--op", help="operator name: e.g., Flatten")
     ap.add_argument("--code-file", help="original code file (buggy operator related)")
@@ -247,12 +226,11 @@ def main():
                          "review/correction")
     ap.add_argument("--verify-rounds", type=int, default=2,
                     help="max API correction rounds (default 2)")
-    ap.add_argument("--api-root", help="API source tree scanned by the existence check "
-                                       "(default: the active backend's root_env "
-                                       "environment variable)")
+    ap.add_argument("--tvm-root", help="tvm source python/tvm directory (defaults to the "
+                                       "TVM_PYTHON_ROOT environment variable)")
     args = ap.parse_args()
 
-    backend = args.backend or ask_line("Backend", DEFAULT_BACKEND)
+    backend = args.backend or ask_line("Backend", "TVM")
     frontend = args.frontend or ask_line("Frontend", "onnx")
     op = args.op or ask_line("Operator")
     code = read_file(args.code_file) or ask_text(
@@ -282,11 +260,6 @@ def main():
         print("(--dry-run: no LLM call)")
         return
 
-    if not args.no_verify:
-        # Fail before spending an LLM call when the API existence check has no tree to
-        # scan. The index built here is reused by run_verification().
-        api_check.get_index(backend, args.api_root)
-
     system = (
         f"You are a meticulous {backend} frontend converter developer. "
         "Write minimal surgical fixes: preserve every untouched line byte-for-byte, "
@@ -307,8 +280,7 @@ def main():
         fixed_code, api_report = api_check.run_verification(
             code, fixed_code, system,
             {"rounds": args.verify_rounds, "no_review": args.no_review,
-             "backend": backend, "api_root": args.api_root,
-             "code_lang": fence_lang(backend)},
+             "tvm_root": args.tvm_root},
         )
         with open(os.path.join(outdir, "api_check.md"), "w", encoding="utf-8") as f:
             f.write(api_report)

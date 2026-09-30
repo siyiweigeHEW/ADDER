@@ -1,0 +1,10 @@
+ONNX Mean specification (opsets 1/6/8/13):
+- Variadic inputs: Mean(x1, x2, ...), element-wise mean, following numpy
+  multidirectional broadcasting.
+- Single input: the mean of the input is the input itself; it must be returned
+  unchanged (shape preserved).
+- Two inputs: Mean(a, b) = (a + b) / 2.
+- Inputs may be constants (initializer / Constant); constant inputs are legal and common.
+- Note: the second positional argument of the numpy reduction functions
+  np.mean/np.sum/np.min/np.max is axis, not a data tensor; without axis, np.mean(x)
+  reduces over all axes to a scalar.

@@ -1,0 +1,8 @@
+ONNX Pad specification (opsets 2/11/13/18/19):
+- mode attribute: "constant" | "reflect" | "edge" | "wrap". Among these, "wrap"
+  (cyclic/toroidal padding) is new in opset 18; topi.nn.circular_pad already implements
+  circular padding.
+- opset 18+ adds the optional axes input (the 4th input): pads only the specified
+  dimensions; pads length = 2 * len(axes); when axes is not provided, pads length = 2 * rank.
+- pads ordering: [x1_begin, x2_begin, ..., x1_end, x2_end, ...].
+- opset 11+ input form: (data, pads[, constant_value[, axes]]).

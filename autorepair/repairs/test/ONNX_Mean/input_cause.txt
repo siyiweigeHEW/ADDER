@@ -1,0 +1,10 @@
+Root cause (LLM attribution + manual confirmation): in the constant-folding path of
+MultiInputBase._impl_v1, output = cls.numpy_op(*np_inputs) (for Mean, numpy_op = np.mean).
+np.mean treats the 2nd+ positional arguments as axis, not as data tensors:
+- Single constant input: np.mean(x) reduces over all axes -> 0-d scalar (e.g., a (2,3)
+  input yields 3.5), whereas ONNX requires a single input to be returned unchanged.
+- Multiple constant inputs: np.mean(a, b) treats b as axis -> TypeError.
+Sum/Min/Max are equally affected (np.sum/np.min/np.max have the same signature).
+The fix must guarantee: a single input is returned unchanged; for multiple inputs, an
+element-wise (broadcasted) mean across inputs; behavior consistent with the
+non-constant path (broadcast_to + stack + relax_op(axis=0)).

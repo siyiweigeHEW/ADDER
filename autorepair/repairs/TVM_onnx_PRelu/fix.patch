@@ -1,0 +1,34 @@
+--- a/tmp/repair_test/PRelu/src/onnx_frontend.py
++++ b/tmp/repair_test/PRelu/src/onnx_frontend.py
+@@ -1789,17 +1789,20 @@
+             non_one_axes = [i for i, ss in enumerate(slope_shape) if ss != 1]
+ 
+             # Must have only ONE non-broadcast axis
+-            if len(non_one_axes) != 1:
+-                raise ValueError(
+-                    f"Invalid PRelu slope shape (multiple non-broadcast dims): {slope_shape}"
+-                )
+-            relative_axis = non_one_axes[0]
+-            axis = ndim - s_ndim + relative_axis
+-
+-            slope = relax.op.reshape(slope, (slope_shape[relative_axis],))
+-            return relax.op.nn.prelu(x, slope, axis)
+-
+-        raise ValueError(f"Unsupported PRelu slope shape: {slope_shape}")
++            if len(non_one_axes) == 1:
++                relative_axis = non_one_axes[0]
++                axis = ndim - s_ndim + relative_axis
++
++                slope = relax.op.reshape(slope, (slope_shape[relative_axis],))
++                return relax.op.nn.prelu(x, slope, axis)
++
++        # Fallback: use generic broadcast via where/less/multiply
++        # This handles: multiple non-broadcast dims, slope same shape as X,
++        # lower-rank slope, and scalar (rank-0) slope.
++        zero = relax.op.zeros(x_shape, x.ty.dtype)
++        mask = relax.op.less(x, zero)
++        neg_part = relax.op.multiply(slope, x)
++        return relax.op.where(mask, neg_part, x)
+ 
+ 
+ class ThresholdedRelu(OnnxOpConverter):

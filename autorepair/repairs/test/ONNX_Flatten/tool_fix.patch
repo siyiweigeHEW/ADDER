@@ -1,0 +1,17 @@
+--- a/python/tvm/relax/frontend/onnx/onnx_frontend.py
++++ b/python/tvm/relax/frontend/onnx/onnx_frontend.py
+@@ -4143,6 +4143,14 @@
+     def _impl_v13(cls, bb, inputs, attr, params):
+         axis = attr.get("axis", 1)
+         data_shape = list(inputs[0].ty.shape)
++        r = len(data_shape)
++
++        if axis < -r or axis > r:
++            raise ValueError(
++                f"Flatten axis {axis} out of range [-{r}, {r}] for input rank {r}"
++            )
++        if axis < 0:
++            axis = axis + r
+ 
+         if axis == 0:
+             new_shape = (1, -1)
