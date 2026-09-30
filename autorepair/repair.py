@@ -88,9 +88,6 @@ def ask_text(title, optional=False):
     return text or None
 
 
-# Language tag for the code fences, per backend. Without this the prompt asks for a
-# python block -- and the extraction is tuned for one -- even when the converter under
-# repair is C++.
 CODE_FENCE_LANG = {
     "TVM": "python",
     "OPENVINO": "cpp",

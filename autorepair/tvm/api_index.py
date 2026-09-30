@@ -43,7 +43,7 @@ SEED_ALIASES = [
 # positives on real APIs that happen not to be enumerated.
 MISSING_STRICT_NS = {"relax.op", "relax.op.nn", "topi", "topi.nn", "tirx"}
 
-# Runtime inspect roots (LLM-facing name -> real module name)
+# LLM-facing name -> real module name
 RUNTIME_ROOTS = {
     "np": "numpy",
     "_np": "numpy",
@@ -60,11 +60,8 @@ RUNTIME_ROOTS = {
     "collections.abc": "collections.abc",
 }
 
-# Dotted calls in the fixed code whose root is not in this set (e.g., bb./attr./cls./x.)
-# are skipped.
 ROOT_WHITELIST = set(RUNTIME_ROOTS) | {"relax", "topi", "tirx", "tvm"}
 
-# (api_name, expected_status) pairs exercised by `api_check.py --self-test tvm`.
 SELF_TEST_CASES = [
     ("relax.op.add", "ok"),
     ("relax.op.zeros", "ok"),
@@ -89,7 +86,6 @@ def detect_root():
     env = os.environ.get(ROOT_ENV)
     if env and os.path.isfile(os.path.join(env, *ROOT_MARKER)):
         return env
-    # Point this at the checkout you want scanned, or export ROOT_ENV instead.
     candidate = "[your tvm source root]"
     if os.path.isfile(os.path.join(candidate, *ROOT_MARKER)):
         return candidate

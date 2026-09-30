@@ -1,13 +1,3 @@
-# Python >= 3.9 -- autorepair/tvm/api_index.py uses ast.unparse.
-#
-# Pinned rather than ranged: the audit verdicts depend on the LLM backend, so a
-# different client version is a different experiment.
-
-# The Qwen clients go through client.responses.create(), which the 1.0 line does not
-# have at all. The reported results were produced with 2.45.0.
+# Python >= 3.9
 openai==2.45.0
-
-# Provides `import Levenshtein`, used for operator-name similarity in both pipelines.
-# `python-Levenshtein` is the old name for the same module and is no longer the
-# maintained distribution; it also lacks wheels for recent Pythons.
 Levenshtein==0.27.1

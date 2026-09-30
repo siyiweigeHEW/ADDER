@@ -43,40 +43,31 @@ STRICT_NS_PREFIXES = ("ov.op", "ov.frontend.common_translators",
 
 MAX_FILES = 4000          # guard against pointing ROOT_ENV at something huge
 
-# Specifiers that may precede a return type on a declaration line.
 _SPECIFIERS = r"(?:template\s*<.*?>\s*)?(?:(?:static|inline|virtual|explicit|constexpr|extern)\s+)*"
 
-# A declaration: some return type (possibly templated, qualified, with pointers) then a
-# snake_case name then '('. Anchored at line start, which keeps call sites out: a call
-# is either indented inside a body that starts with 'return'/an expression, or is
-# preceded by '=' / '(' / ',' rather than by a type.
+# Anchored at line start, so call sites -- which follow '=', '(' or a return type they
+# are not -- stay out.
 _DECL_RE = re.compile(
     _SPECIFIERS
     + r"(?:[\w:]+(?:<[^<>]*>)?[\s*&]+)+"
     + r"([a-z_]\w*)\s*\("
 )
 
-# class / struct declarations, including `class OPENVINO_API Foo` and `struct Bar final`
 _CLASS_RE = re.compile(
     r"^\s*(?:template\s*<.*?>\s*)?(?:class|struct)\s+(?:OPENVINO_API\s+)?([A-Z]\w*)"
 )
 
 _NAMESPACE_OPEN_RE = re.compile(r"^\s*namespace\s+([A-Za-z_]\w*)\s*\{")
 
-# `using OutputVector = std::vector<Output<Node>>;` -- a type alias is part of the API
-# surface, and the converters reference these by name.
 _USING_RE = re.compile(r"^\s*using\s+([A-Za-z_]\w*)\s*=")
 _NAMESPACE_CLOSE_RE = re.compile(r"^\s*\}\s*(?://.*)?$")
 
-# Names that are keywords rather than API functions; a bare call to one of these is
-# language syntax, not an API use.
 _CPP_KEYWORDS = {
     "if", "for", "while", "switch", "catch", "return", "sizeof", "alignof", "decltype",
     "static_cast", "dynamic_cast", "const_cast", "reinterpret_cast", "new", "delete",
     "throw", "assert", "defined", "operator", "typeid", "noexcept", "and", "or", "not",
 }
 
-# (api_name, expected_status) pairs exercised by `api_check.py --self-test openvino`.
 SELF_TEST_CASES = [
     ("ov::op::v1::Add", "ok"),
     ("ov::op::v0::Constant", "ok"),
@@ -98,7 +89,6 @@ def detect_root():
     env = os.environ.get(ROOT_ENV)
     if env and os.path.isdir(os.path.join(env, *ROOT_MARKER)):
         return env
-    # Point this at the checkout you want scanned, or export ROOT_ENV instead.
     candidate = "[your openvino source root]"
     if os.path.isdir(os.path.join(candidate, *ROOT_MARKER)):
         return candidate
@@ -429,7 +419,6 @@ def extract_calls(code, index=None):
         # Emitted whether or not the index knows it: resolve() is what decides between
         # "exists", "fabricated" and "cannot tell".
         out.append(name)
-    # stable, de-duplicated, original order
     seen = set()
     uniq = []
     for n in out:

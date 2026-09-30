@@ -1,47 +1,26 @@
 #!/usr/bin/env python3
 """API verification of LLM fix patches: existence check + misuse review + correction loop.
 
-Targets two kinds of LLM mistakes on APIs: 'fabrication' (using an API that does not
-exist) and 'misuse' (using an existing API incorrectly):
+Calls made by the added lines of a patch are resolved against a static index of the
+backend's source tree (read, not imported) plus the standard library; the APIs that exist
+go to the LLM for a misuse review, and any 'nonexistent' or 'misused' finding is fed back
+for a correction round until it passes or the round limit is hit.
 
-1. After the patch is generated, extract API calls from the **added lines** of the
-   fixed code;
-2. Resolve each call and check whether it exists. Two sources are consulted: a **static
-   index** of the backend's own source tree, and the standard library for modules that
-   can be imported (numpy / functools / ...). The tree is read rather than imported,
-   because these frameworks are normally not importable in the analysis environment;
-3. For APIs that exist, extract their declaration / signature / docstring and ask the
-   LLM to review whether they are misused;
-4. When an API is 'nonexistent' or 'misused', design the detected information (with
-   evidence) into a prompt and feed it back to the LLM, asking it to re-output the
-   fixed code after modification; iterate until it passes or reaches the round limit.
+This module is the driver. Everything backend-specific lives in one module per tool stack
+under `tvm/` and `openvino/`; adding a backend means adding a directory there and listing
+it in `_BACKEND_DIRS`. Such a module provides:
 
-This module is the driver: everything backend-specific -- how calls are extracted, how
-the index is built, how a name is resolved -- comes from the backend modules, one per
-tool stack under `tvm/` and `openvino/`, which declare the interface below. Adding a
-backend means adding one such directory and listing it in `_BACKEND_DIRS`.
+    NAME, ROOT_ENV, ROOT_HINT, REVIEW_SYSTEM, SELF_TEST_CASES
+    detect_root()               -> path or None
+    build_index(root)           -> opaque index
+    describe_index(index)       -> one-line summary
+    extract_calls(code, index)  -> [call names]
+    resolve(call, index)        -> (status, ns, leaf, info, close)
+    describe(call, index)       -> (declaration, doc, source location)
 
-A backend module provides:
-
-    NAME              tool stack name, used in the report and the review prompt
-    ROOT_ENV          environment variable naming its source tree
-    ROOT_HINT         human description of that tree, for error messages
-    REVIEW_SYSTEM     system prompt for the misuse review
-    SELF_TEST_CASES   [(call, expected status)] for `--self-test`
-    detect_root()     -> path or None
-    build_index(root) -> opaque index object
-    describe_index(index) -> one-line summary
-    extract_calls(code, index) -> [call names]
-    resolve(call, index) -> (status, ns, leaf, info, close)   # always a 5-tuple
-    describe(call, index) -> (declaration, doc, source location)
-
-`status` is one of `ok` / `missing` / `unverifiable`. A backend only reports `missing`
-where its index is complete enough for that verdict to be trustworthy; everywhere else
-it degrades to `unverifiable`, so a real API that merely was not enumerated cannot be
-reported as fabricated.
-
-Self-test: `python api_check.py --self-test [backend]` (no LLM; exercises the static
-index and the resolution logic).
+`status` is `ok` / `missing` / `unverifiable`. A backend reports `missing` only where its
+index is complete enough for that verdict to be trustworthy, so a real API that merely was
+not enumerated is never reported as fabricated.
 """
 import difflib
 import importlib.util
@@ -224,14 +203,11 @@ def _format_issue(issue):
         if isinstance(info, dict):
             where = f"not found in namespace `{ns}` ({len(info['names'])} APIs)"
         else:
-            # A bare call has no namespace to point at -- it was resolved against the
-            # flat name map the scan produced.
             where = "not declared anywhere in the scanned sources"
         return (
             f"❌ **nonexistent API**: `{api}` -- {where}{extra}. Use a real API or an "
             f"equivalent low-level implementation."
         )
-    # misuse
     return (
         f"⚠ **suspected misuse**: `{api}` -- {detail.get('issue', '')}"
         + (f"  suggestion: {detail.get('suggestion', '')}"
