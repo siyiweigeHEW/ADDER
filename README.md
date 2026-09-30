@@ -65,16 +65,11 @@ the fix uses before accepting it.
 
 ### 2.0 Repository layout
 
-    .
-    ├── tvm/                    audit pipeline for TVM          (Python frontends)
-    ├── openvino/               audit pipeline for OpenVINO     (C++ frontends)
-    ├── autorepair/             repair + API verification
-    ├── requirements.txt        pinned dependencies
-    └── README.md
-
-The two pipelines are independent, self-contained copies: each has its own `main.py`,
-`llm_client.py` and helper modules, so either can be run without the other. Files the
-runs read or write are **not** shipped and are listed as you go below.
+Three directories: `tvm/` and `openvino/` are the two audit pipelines — independent,
+self-contained copies, each with its own `main.py`, `llm_client.py` and helper modules, so
+either runs without the other — and `autorepair/` is the repair component. The full tree is
+in Section 6. Files a run reads or writes are **not** shipped; each is introduced where it
+comes up.
 
 ### 2.1 Build the environment
 
@@ -83,7 +78,7 @@ Python ≥ 3.9 (`autorepair/tvm/api_index.py` uses `ast.unparse`).
     pip install -r requirements.txt
 
 The pins matter: the audit verdicts come from an LLM, so a different client version is a
-different experiment. See 2.6.
+different experiment.
 
 ### 2.2 Supply the inputs
 
@@ -106,53 +101,27 @@ Which version of that documentation you scrape matters:
   4). A dump taken from a **newer** version than the converter implements therefore turns
   intended behaviour into a false Bug, and one taken from an **older** version hides real
   gaps.
-- The two pipelines need not be on the same version. For ONNX, TVM implements converters
-  up to **opset 23** (`_impl_v23` in `onnx_frontend.py`, selected per model by
-  `get_converter(cls, opset)`, which picks the largest implemented version at or below the
-  model's opset), while the `OPSET_RANGE`s OpenVINO's converters register reach **opset
-  19**. Each pipeline's `onnxdoc.txt` should match its own range, which is why the two
-  keep separate `docxes/` directories instead of sharing one.
-- To read the version off a checkout: for ONNX, the highest `_impl_vN` method in the
-  frontend, or the `OPSET_RANGE(lo, hi)` a converter registers with. Torch and Paddle
-  have no opset, so take the framework release the frontend was written against.
+- The two pipelines need not be on the same version. In their ONNX frontends, TVM
+  implements converters up to **opset 23** and OpenVINO's `OPSET_RANGE`s reach **opset 19**,
+  so each pipeline's `onnxdoc.txt` matches its own range — which is why they keep separate
+  `docxes/` directories rather than sharing one.
+- Read the version off a checkout: the highest `_impl_vN` method in the frontend, or the
+  `OPSET_RANGE(lo, hi)` a converter registers with. Torch and Paddle have no opset, so take
+  the framework release the frontend was written against.
 
-`get_doc_dumps.py` builds them: it walks the reference index page of a framework, fetches
-each operator page it links to, and concatenates them in the format above. Each framework's
-index page is a placeholder in that script — put in the one you want to scrape, from
-whichever edition matches the version you settled on. Its dependencies are separate, since
-only this one-off script needs them:
+`get_doc_dumps.py` builds them: it walks a framework's reference index page, fetches the
+operator pages it links to, and concatenates each one's text behind its URL, which is the
+layout Step 4 parses. Each framework's index page is a placeholder in that script — fill in
+one from the edition that matches the version you settled on. Its dependencies are separate,
+since only this one-off script needs them:
 
     pip install -r requirements-doc-dumps.txt
     python get_doc_dumps.py --out tvm/docxes onnx torch
     python get_doc_dumps.py --out openvino/docxes onnx torch paddle jax
 
-The dumps go where the pipeline expects them:
-
-    openvino/docxes/  onnxdoc.txt  torchdoc.txt  paddledoc.txt  jaxdoc.txt
-    tvm/docxes/       onnxdoc.txt  torchdoc.txt
-
-  The format is: operator reference pages concatenated, each block introduced by its URL
-  and separated from the next by a line of exactly 50 `=` characters.
-
-      operator reference dump
-      ==================================================
-      https://example.invalid/operators/Add.html
-      ==================================================
-      Add computes element-wise addition of two inputs. Both inputs must have the
-      same shape (numpy-style broadcasting since opset 7).
-      ==================================================
-      https://example.invalid/operators/Sub.html
-      ==================================================
-      Sub computes element-wise subtraction. Inputs must share a shape.
-      ==================================================
-
-  The operator name is taken from the URL's last path segment, so the URL has to end in
-  the operator name (`.../Add.html`, or `.../add__Add.html` under the ONNX convention).
-  Lookups are lenient — names are lowercased, underscores and trailing digits stripped,
-  and a small table of cross-framework variants (`cum_sum`/`cumsum`, `reshape2`/`reshape`,
-  `BatchNormalization`/`batch_norm`, …) is consulted — and the highest-scoring block
-  wins. A frontend with no dump is not an error: Step 4 records the pair as
-  documentation-not-matched, which is flag `8` in Section 4.
+Step 4 reads an operator's name off the last path segment of its block's URL, so a page's URL
+has to end in the operator name. A frontend with no dump is not an error: the pair is
+recorded as documentation-not-matched, flag `8` in Section 4.
 
 **(c) An API key.** Each client class in `llm_client.py` ships with the placeholder
 `[Your own API key]`; replace it with your key for that provider. `autorepair/` also
@@ -219,17 +188,7 @@ lines with `doc_match == 0`:
 
 ### 2.6 Run the repair
 
-`autorepair/` is driven by hand. Its inputs:
-
-| Input | Description |
-|---|---|
-| `backend` | tool stack under repair: `TVM` or `OPENVINO` |
-| `frontend` | frontend: onnx / torch / paddle … |
-| `op` | operator name, e.g. `Flatten` |
-| `code` | the original code to fix — only the part related to the buggy operator |
-| `doc` | the documentation relevant to the fix (optional) |
-| `cause` | the root cause attributed by the audit (optional; without it the repair model reasons from the code and docs itself) |
-| `--src-file` | path of the real source file (optional): anchors the patch to it so the line numbers are real |
+[`autorepair/README.md`](autorepair/README.md) lists its inputs; in short:
 
     cd autorepair
 
@@ -249,9 +208,8 @@ same relative form, so it applies with `patch -p1` from the source root. Each ca
 `repairs/{backend}_{frontend}_{op}/`: `prompt.txt` is written as soon as the prompt is
 built — `--dry-run` stops there — and a real run adds `response.md`, `fixed.py`,
 `fix.patch` and, unless `--no-verify` was given, `api_check.md`. The script prints
-`applyable=`;
-`True` means the patch carries real line numbers. Being applyable does not make a fix
-correct — verify it independently by differential or reproduction testing.
+`applyable=`; `True` means the patch carries real line numbers. Being applyable does not
+make a fix correct — verify it independently by differential or reproduction testing.
 
 API verification runs automatically after the patch is generated (Section 5). It needs a
 source tree to scan:
@@ -486,13 +444,11 @@ Each call resolves to one of three states:
 Anything found missing or misused is fed back for a correction round, up to
 `--verify-rounds`.
 
-The index is built from the checkout named by `TVM_PYTHON_ROOT` or `OPENVINO_SRC_ROOT`
-(2.6). For TVM it comes from the package re-exports in each `__init__.py` plus the defs
-in the package's own modules; for OpenVINO, from C++ declaration sites — the operator
-headers under `src/core/include/openvino/op/`, where the header's innermost `namespace vN`
-is the opset the converters refer to as `v1::Add`, the rest of
-`src/core/include/openvino/`, and the frontend helpers under
-`src/frontends/{onnx,pytorch,paddle,common_translators}`.
+The index is built from the checkout named by `TVM_PYTHON_ROOT` or `OPENVINO_SRC_ROOT`:
+for TVM, the package re-exports plus the defs in each package's own modules; for OpenVINO,
+the C++ declaration sites — the operator headers under `src/core/include/openvino/op/`,
+where the header's innermost `namespace vN` is the opset the converters refer to as
+`v1::Add`, and the frontend helpers.
 
 **Verification boundary.** It checks that an API exists and is used consistently with its
 signature; it does not catch a semantic regression in a shared code path — a fix that
