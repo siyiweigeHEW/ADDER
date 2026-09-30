@@ -151,7 +151,9 @@ All other rules, execution steps, and output formats are identical and require n
 | File | Role |
 |---|---|
 | `repair.py` | Main script: manual input → build prompt → call LLM → code → patch → API verification |
-| `api_check.py` | API verification: namespace existence check (static scan of the source tree + runtime inspect) + LLM misuse review + correction loop |
+| `api_check.py` | API verification driver: existence check (static index of the backend's source tree + runtime inspect) + LLM misuse review + correction loop |
+| `api_index_tvm.py` | TVM backend for the verifier: index built from the Python package re-exports, dotted-call extraction, resolution |
+| `api_index_openvino.py` | OpenVINO backend: index built from C++ declaration sites, `::`-call extraction, resolution |
 | `llm_client.py` | `DeepseekV4FlashClient` + exponential-backoff retry |
 
 ### 5.2 Manual inputs
@@ -187,7 +189,7 @@ API-verification arguments:
 - `--no-verify`: skip API verification entirely (existence check + misuse review + correction loop).
 - `--no-review`: only run the static existence check; skip the LLM misuse review/correction (saves LLM calls).
 - `--verify-rounds N`: correction round limit (default 2).
-- `--tvm-root PATH`: tvm source `python/tvm` directory scanned by the existence check (defaults to the `TVM_PYTHON_ROOT` environment variable; `--no-verify` skips the check).
+- `--api-root PATH`: source tree scanned by the existence check, for the backend given to `--backend`. Defaults to that backend's own environment variable — `TVM_PYTHON_ROOT` or `OPENVINO_SRC_ROOT` (see 7.2); `--no-verify` skips the check.
 
 ### 5.4 Output
 
@@ -250,7 +252,9 @@ whole directory as a run artifact, not as part of this repository.
     │   └── ...                    # Same structure as tvm/
     └── autorepair/                # Repair component
         ├── repair.py              # prompt → LLM → code → patch → API verification
-        ├── api_check.py           # existence check + misuse review + correction loop
+        ├── api_check.py           # verifier driver: check + review + correction loop
+        ├── api_index_tvm.py       #   TVM backend for the verifier
+        ├── api_index_openvino.py  #   OpenVINO backend for the verifier
         ├── llm_client.py          # DeepseekV4FlashClient + exponential-backoff retry
         └── repairs/               # Repair cases produced by the method
 
@@ -282,8 +286,10 @@ Both pipelines read the framework source directly rather than importing it:
 - **TVM** — a checkout of `apache/tvm`. `main.py` points at `python/tvm/relax/frontend`,
   which is where the ONNX and PyTorch frontends live.
 
-`autorepair/` needs a TVM checkout too, but only for the API existence check; it scans
-the tree statically rather than importing it.
+`autorepair/` needs a checkout of the backend it is verifying too, but only for the API
+existence check; it scans the tree statically rather than importing it. Point
+`TVM_PYTHON_ROOT` at a TVM `python/tvm` directory, or `OPENVINO_SRC_ROOT` at an OpenVINO
+checkout root (README §5.5).
 
 ### 7.3 Documentation dumps
 

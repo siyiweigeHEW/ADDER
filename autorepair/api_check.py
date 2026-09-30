@@ -1,83 +1,78 @@
 #!/usr/bin/env python3
-"""API verification of LLM fix patches: namespace existence check + misuse review +
-correction loop.
+"""API verification of LLM fix patches: existence check + misuse review + correction loop.
 
 Targets two kinds of LLM mistakes on APIs: 'fabrication' (using an API that does not
 exist) and 'misuse' (using an existing API incorrectly):
 
-1. After the patch is generated, extract `a.b.c(...)`-style API calls from the
-   **added lines** of the fixed code;
-2. Resolve the API's namespace (e.g., `relax.op.add` -> `relax.op`), get the **full
-   list of APIs** in that namespace, and check whether the API is among them
-   (existence check);
-3. For existing APIs, extract their signature/docstring (API brief docs) and ask the
+1. After the patch is generated, extract API calls from the **added lines** of the
+   fixed code;
+2. Resolve each call and check whether it exists. Two sources are consulted: a **static
+   index** of the backend's own source tree, and the standard library for modules that
+   can be imported (numpy / functools / ...). The tree is read rather than imported,
+   because these frameworks are normally not importable in the analysis environment;
+3. For APIs that exist, extract their declaration / signature / docstring and ask the
    LLM to review whether they are misused;
-4. When an API is 'nonexistent' or 'misused', design the detected information
-   (with evidence) into a prompt and feed it back to the LLM, asking it to re-output
-   the fixed code after modification; iterate until it passes or reaches the round limit.
+4. When an API is 'nonexistent' or 'misused', design the detected information (with
+   evidence) into a prompt and feed it back to the LLM, asking it to re-output the
+   fixed code after modification; iterate until it passes or reaches the round limit.
 
-Implementation notes (static vs runtime inspect):
-- tvm cannot be `import`ed locally (lib build issue; the local TVM builds raise
-  AttributeError), so TVM namespaces (relax.op / topi.nn / tirx / ...) build the API
-  list by **statically scanning the source tree**: parse each package's `__init__.py`
-  re-exports (`from .X import (a, b, ...)`) plus in-package `def` names.
-- Modules that can be imported at runtime (numpy / functools / math / onnx / ...) use
-  the standard `inspect` mechanism for the existence check and doc extraction.
+This module is the driver: everything backend-specific -- how calls are extracted, how
+the index is built, how a name is resolved -- comes from the backend modules
+(`api_index_tvm`, `api_index_openvino`), which declare the interface below. Adding a
+backend means adding one such module and registering it in `BACKENDS`.
 
-Self-test: `python api_check.py --self-test` (no LLM; only verifies the static index
-and the resolution logic).
+A backend module provides:
+
+    NAME              tool stack name, used in the report and the review prompt
+    ROOT_ENV          environment variable naming its source tree
+    ROOT_HINT         human description of that tree, for error messages
+    REVIEW_SYSTEM     system prompt for the misuse review
+    SELF_TEST_CASES   [(call, expected status)] for `--self-test`
+    detect_root()     -> path or None
+    build_index(root) -> opaque index object
+    describe_index(index) -> one-line summary
+    extract_calls(code, index) -> [call names]
+    resolve(call, index) -> (status, ns, leaf, info, close)   # always a 5-tuple
+    describe(call, index) -> (declaration, doc, source location)
+
+`status` is one of `ok` / `missing` / `unverifiable`. A backend only reports `missing`
+where its index is complete enough for that verdict to be trustworthy; everywhere else
+it degrades to `unverifiable`, so a real API that merely was not enumerated cannot be
+reported as fabricated.
+
+Self-test: `python api_check.py --self-test [backend]` (no LLM; exercises the static
+index and the resolution logic).
 """
-import ast
 import difflib
-import importlib
-import inspect
 import json
 import os
 import re
+import sys
 
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+import api_index_openvino  # noqa: E402
+import api_index_tvm  # noqa: E402
 from llm_client import DeepseekV4FlashClient  # noqa: E402
 
-# ---------------------------------------------------------------- constants
-
-# LLM-facing API name -> relative directory in the tvm source tree (rooted at detect_tvm_root())
-SEED_ALIASES = [
-    ("relax.op", "relax/op"),
-    ("relax", "relax"),
-    ("topi.nn", "topi/nn"),
-    ("topi", "topi"),
-    ("tirx", "tirx"),
-]
-
-# These 5 namespaces are fully enumerated (init re-exports + in-package defs), so the
-# missing verdict is authoritative; for other namespaces (e.g., relax, which aggregates
-# many level-0 re-exports) a leaf not found degrades to unverifiable, to avoid false
-# positives on real APIs that happen not to be enumerated.
-MISSING_STRICT_NS = {"relax.op", "relax.op.nn", "topi", "topi.nn", "tirx"}
-
-# Runtime inspect roots (LLM-facing name -> real module name)
-RUNTIME_ROOTS = {
-    "np": "numpy",
-    "_np": "numpy",
-    "numpy": "numpy",
-    "functools": "functools",
-    "math": "math",
-    "operator": "operator",
-    "onnx": "onnx",
-    "re": "re",
-    "os": "os",
-    "warnings": "warnings",
-    "json": "json",
-    "collections": "collections",
-    "collections.abc": "collections.abc",
+BACKENDS = {
+    api_index_tvm.NAME.upper(): api_index_tvm,
+    api_index_openvino.NAME.upper(): api_index_openvino,
 }
-
-# Dotted calls in the fixed code whose root is not in these lists (e.g., bb./attr./cls./x.)
-# are skipped
-ROOT_WHITELIST = set(RUNTIME_ROOTS) | {"relax", "topi", "tirx", "tvm"}
-
-DOTTED_CALL_RE = re.compile(r"(?<![.\w])([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+)\s*\(")
+DEFAULT_BACKEND = api_index_tvm.NAME.upper()
 
 CODE_FENCE_RE = re.compile(r"```[a-zA-Z0-9_-]*\s*\n(.*?)```", re.DOTALL)
+
+
+def get_backend(name=None):
+    key = (name or DEFAULT_BACKEND).upper()
+    if key not in BACKENDS:
+        raise SystemExit(
+            f"Unknown backend '{name}'. Known: {', '.join(sorted(BACKENDS))}"
+        )
+    return BACKENDS[key]
 
 
 def _clean_block(text):
@@ -92,227 +87,10 @@ def _clean_block(text):
 
 
 def _extract_code(response):
-    """Extract the ```python code block from the response; return the whole response if
-    there is no fence (same as repair.py)."""
+    """Extract the first fenced code block from the response (the fence language is not
+    enforced); returns the whole response when there is no fence (same as repair.py)."""
     m = CODE_FENCE_RE.search(response)
     return (_clean_block(m.group(1)) + "\n") if m else _clean_block(response) + "\n"
-
-
-REVIEW_SYSTEM = (
-    "You are a meticulous TVM frontend developer reviewing whether Relax/Topi/NumPy "
-    "APIs are used correctly. Return only the JSON object."
-)
-
-# ---------------------------------------------------------------- tvm root
-
-
-def detect_tvm_root():
-    """Automatically locate the tvm source python/tvm directory (for static scanning)."""
-    env = os.environ.get("TVM_PYTHON_ROOT")
-    if env and os.path.isfile(os.path.join(env, "relax", "op", "__init__.py")):
-        return env
-    candidates = [
-        # Point this at the `python/tvm` directory of the TVM checkout you want
-        # scanned, or leave it unset and export TVM_PYTHON_ROOT instead.
-        "[your tvm source root]",
-    ]
-    for c in candidates:
-        c = os.path.normpath(c)
-        if os.path.isfile(os.path.join(c, "relax", "op", "__init__.py")):
-            return c
-    return None
-
-
-# ---------------------------------------------------------------- static index
-
-_INDEX_CACHE = {}
-
-
-def _read(path):
-    with open(path, encoding="utf-8") as f:
-        return f.read()
-
-
-def scan_defs(filepath):
-    """Return a list of (name, filepath): all top-level `def name` in the file
-    (respecting __all__)."""
-    if not os.path.isfile(filepath):
-        return []
-    try:
-        tree = ast.parse(_read(filepath))
-    except SyntaxError:
-        return []
-    all_names = None
-    for node in tree.body:
-        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(
-            node.targets[0], ast.Name
-        ) and node.targets[0].id == "__all__":
-            try:
-                all_names = [e.value for e in node.value.elts]
-            except AttributeError:
-                all_names = None
-    out = []
-    for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if all_names is None or node.name in all_names:
-                out.append((node.name, filepath))
-    return out
-
-
-def parse_reexports(pkg_dir):
-    """Parse the re-exports of a package's __init__.py, building the set of API names
-    and a name -> source-file map.
-
-    Handles two styles:
-      from .binary import (add, subtract, ...)    # explicit list
-      from .conv1d import *                       # star: scan all defs in the imported file
-    Also adds: all top-level defs in every *.py of the package (to cover APIs that are
-    reachable as namespace attributes even if not re-exported).
-    Returns (names:set, src_map:dict[name->filepath]).
-    """
-    names = set()
-    src_map = {}
-    init = os.path.join(pkg_dir, "__init__.py")
-    if os.path.isfile(init):
-        try:
-            tree = ast.parse(_read(init))
-        except SyntaxError:
-            tree = None
-        if tree is not None:
-            for node in ast.walk(tree):
-                if isinstance(node, ast.ImportFrom) and node.level == 1:
-                    if node.module:  # from .sub import (...)
-                        sub = node.module.replace(".", "/")
-                        for alias in node.names:
-                            if alias.name == "*":
-                                for nm, f in scan_defs(os.path.join(pkg_dir, sub + ".py")):
-                                    names.add(nm)
-                                    src_map.setdefault(nm, f)
-                            else:
-                                names.add(alias.name)
-                                src_map.setdefault(
-                                    alias.name, os.path.join(pkg_dir, sub + ".py")
-                                )
-                    else:  # from . import a, b, c (submodule names)
-                        for alias in node.names:
-                            names.add(alias.name)
-    # Supplement: all defs in the package's top-level files (including non-re-exported),
-    # to reduce false negatives
-    if os.path.isdir(pkg_dir):
-        for f in sorted(os.listdir(pkg_dir)):
-            if f.endswith(".py"):
-                for nm, fp in scan_defs(os.path.join(pkg_dir, f)):
-                    names.add(nm)
-                    src_map.setdefault(nm, fp)
-    return names, src_map
-
-
-def build_index(tvm_root):
-    """Build a namespace -> {names, src, dir} index.
-
-    Sub-package directories (with __init__.py) under the seed namespaces are also
-    indexed automatically, e.g., image/memory/nn/vision under relax/op ->
-    relax.op.image, etc.
-    Returns a dict: ns_name -> info.
-    """
-    namespaces = {}
-
-    def add_ns(ns_name, rel):
-        pkg_dir = os.path.join(tvm_root, rel)
-        if not os.path.isdir(pkg_dir):
-            return
-        names, src = parse_reexports(pkg_dir)
-        namespaces[ns_name] = {"names": names, "src": src, "dir": pkg_dir}
-
-    for alias, rel in SEED_ALIASES:
-        add_ns(alias, rel)
-        pkg_dir = os.path.join(tvm_root, rel)
-        if os.path.isdir(pkg_dir):
-            for sub in sorted(os.listdir(pkg_dir)):
-                subdir = os.path.join(pkg_dir, sub)
-                if os.path.isdir(subdir) and os.path.isfile(
-                    os.path.join(subdir, "__init__.py")
-                ):
-                    add_ns(f"{alias}.{sub}", f"{rel}/{sub}")
-    return namespaces
-
-
-def get_index(tvm_root=None):
-    root = tvm_root or detect_tvm_root()
-    if root not in _INDEX_CACHE:
-        _INDEX_CACHE[root] = build_index(root)
-    return _INDEX_CACHE[root]
-
-
-# ---------------------------------------------------------------- resolution/existence
-
-
-def resolve_runtime(name):
-    """Resolve at runtime via inspect (numpy/functools and other importable modules).
-    Returns (status, detail...)."""
-    parts = name.split(".")
-    root = RUNTIME_ROOTS.get(parts[0], parts[0])
-    try:
-        obj = importlib.import_module(root)
-    except ImportError:
-        return ("unverifiable", root, parts[0], None)
-    for p in parts[1:]:
-        if not hasattr(obj, p):
-            return ("missing", root, p, None)
-        obj = getattr(obj, p)
-    return ("ok", root, parts[-1], obj)
-
-
-def resolve(name, index):
-    """Resolve a dotted API name. Returns (status, ns, leaf, info).
-
-    status: ok / missing / unverifiable
-      ok          the API exists in the namespace
-      missing     the namespace resolved, but the leaf is not in its API list (fabrication)
-      unverifiable the namespace is not indexed or the intermediate level cannot be
-                   confirmed (to avoid false positives)
-    """
-    if name in index:
-        info = index[name]
-        return ("ok", name, name, info)
-    ns_list = sorted(index.keys(), key=len, reverse=True)
-    for ns in ns_list:
-        if name.startswith(ns + "."):
-            rest = name[len(ns):].lstrip(".")
-            info = index[ns]
-            parts = rest.split(".")
-            if len(parts) == 1:
-                if parts[0] in info["names"]:
-                    return ("ok", ns, parts[0], info)
-                close = difflib.get_close_matches(parts[0], info["names"], n=3)
-                if ns in MISSING_STRICT_NS:
-                    return ("missing", ns, parts[0], info, close)
-                return ("unverifiable", ns, parts[0], info, None)
-            # Chained: the whole chain must be within the namespace to be ok, otherwise
-            # do not confirm (to avoid false positives)
-            if all(p in info["names"] for p in parts):
-                return ("ok", ns, parts[-1], info)
-            return ("unverifiable", ns, parts[0], info, None)
-    root = name.split(".")[0]
-    if root in ROOT_WHITELIST:
-        st, mod, leaf, obj = resolve_runtime(name)
-        return (st, mod, leaf, obj)
-    return ("unverifiable", None, root, None, None)
-
-
-def extract_api_calls(code):
-    """Extract API call names of the form `relax.op.add(` / `topi.nn.pad(` from code.
-
-    Only keeps dotted calls whose root is in ROOT_WHITELIST; runtime objects such as
-    bb./attr./cls./x./slope. are skipped.
-    """
-    out = []
-    for m in DOTTED_CALL_RE.finditer(code):
-        name = m.group(1)
-        root = name.split(".")[0]
-        if root in ROOT_WHITELIST:
-            out.append(name)
-    return out
 
 
 def added_lines(original, fixed):
@@ -327,52 +105,22 @@ def added_lines(original, fixed):
                 yield line
 
 
-def extract_api_calls_from_lines(lines):
-    return extract_api_calls("\n".join(lines))
+# ---------------------------------------------------------------- index
 
 
-# ---------------------------------------------------------------- API docs
+_INDEX_CACHE = {}
 
 
-def extract_def_doc(filepath, name):
-    """Extract the signature and docstring of `def name` from the source file.
-    Returns (sig, doc, lineno) or None."""
-    if not os.path.isfile(filepath):
-        return None
-    try:
-        tree = ast.parse(_read(filepath))
-    except SyntaxError:
-        return None
-    for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
-            sig = ast.unparse(node.args)
-            doc = ast.get_docstring(node) or ""
-            return (f"def {name}({sig})", doc, node.lineno)
-    return None
-
-
-def get_api_doc_text(name, index):
-    """Return the API's (signature, docstring summary, source). For feeding to the
-    review LLM."""
-    r = resolve(name, index)
-    st, ns, leaf, info = r[0], r[1], r[2], r[3]
-    if st != "ok":
-        return (None, None, st)
-    if isinstance(info, dict) and "src" in info:  # static namespace
-        fp = info["src"].get(leaf)
-        if fp:
-            res = extract_def_doc(fp, leaf)
-            if res:
-                sig, doc, lineno = res
-                return (sig, doc, f"{os.path.relpath(fp, info['dir'])}:{lineno}")
-        return (None, None, "static-no-def")
-    if isinstance(info, type) or info is not None:  # runtime object
-        try:
-            doc = inspect.getdoc(info) or ""
-            return (f"def {leaf}(...)", doc, f"runtime {ns}")
-        except Exception:
-            return (None, None, "runtime-nodoc")
-    return (None, None, st)
+def get_index(backend=None, root=None):
+    """Index for `backend`, built on first use. Empty when the tree is not configured."""
+    mod = get_backend(backend)
+    root = root or mod.detect_root()
+    if root is None:
+        return None, {}, None
+    key = (mod.NAME, root)
+    if key not in _INDEX_CACHE:
+        _INDEX_CACHE[key] = mod.build_index(root)
+    return root, _INDEX_CACHE[key], mod
 
 
 # ---------------------------------------------------------------- misuse review (LLM)
@@ -398,18 +146,18 @@ def _parse_verdicts(text):
     return [v for v in verdicts if isinstance(v, dict) and v.get("api")]
 
 
-def review_usage(original, fixed, used_apis, index, client):
+def review_usage(original, fixed, used_apis, index, mod, client, code_lang="python"):
     """Ask the LLM to review, against the API brief docs, whether there is any misuse.
     Returns (verdicts, raw_response)."""
     added = "\n".join(added_lines(original, fixed)) or fixed
     doc_blocks = []
     for name in used_apis:
-        sig, doc, src = get_api_doc_text(name, index)
-        if sig is None:
+        decl, doc, src = mod.describe(name, index)
+        if decl is None:
             doc_blocks.append(f"### {name}\n(document unavailable: {src})")
         else:
-            excerpt = doc[:800].replace("`", "'")
-            doc_blocks.append(f"### {name}\nsignature: `{sig}`\nsource: {src}\n"
+            excerpt = (doc or "")[:800].replace("`", "'")
+            doc_blocks.append(f"### {name}\ndeclaration: `{decl}`\nsource: {src}\n"
                               f"summary: {excerpt}")
 
     prompt = f"""# API usage review (autorepair automatic verification)
@@ -418,12 +166,12 @@ The added/changed lines of the fixed code call the following APIs. Based on each
 signature and summary, judge whether its usage is correct.
 
 ## Original code (the fix scope; use it to infer codebase conventions)
-```python
+```{code_lang}
 {original}
 ```
 
 ## Added/changed lines of the fixed code
-```python
+```{code_lang}
 {added}
 ```
 
@@ -434,8 +182,8 @@ signature and summary, judge whether its usage is correct.
 1. Parameter name, type, or count does not match the signature;
 2. Return type/semantics do not match what the call site expects;
 3. Clearly deviates from codebase conventions (e.g., passing a DataType object where a
-   string dtype is expected, using a Python built-in instead of a relax operator,
-   hard-coding behavior that should be parameterized);
+   string dtype is expected, calling a language built-in where a {mod.NAME} API is
+   expected, hard-coding behavior that should be parameterized);
 4. The API does not exist in this version.
 
 ## Output (strict JSON, only JSON)
@@ -445,7 +193,7 @@ signature and summary, judge whether its usage is correct.
 ]}}
 ```
 """
-    resp = client.model_prediction(prompt, system=REVIEW_SYSTEM)
+    resp = client.model_prediction(prompt, system=mod.REVIEW_SYSTEM)
     return _parse_verdicts(resp), resp
 
 
@@ -456,13 +204,17 @@ def _format_issue(issue):
     """issue = (api, kind, detail). kind: missing | misuse."""
     api, kind, detail = issue
     if kind == "missing":
-        st, ns, leaf, info, close = detail
+        _st, ns, leaf, info, close = detail
         extra = f"; similar APIs: {', '.join(close)}" if close else ""
-        ns_size = len(info["names"]) if isinstance(info, dict) else 0
+        if isinstance(info, dict):
+            where = f"not found in namespace `{ns}` ({len(info['names'])} APIs)"
+        else:
+            # A bare call has no namespace to point at -- it was resolved against the
+            # flat name map the scan produced.
+            where = "not declared anywhere in the scanned sources"
         return (
-            f"❌ **nonexistent API**: `{api}` -- not found in namespace `{ns}` "
-            f"({ns_size} APIs){extra}. Use a real API or an equivalent low-level "
-            f"implementation."
+            f"❌ **nonexistent API**: `{api}` -- {where}{extra}. Use a real API or an "
+            f"equivalent low-level implementation."
         )
     # misuse
     return (
@@ -472,7 +224,7 @@ def _format_issue(issue):
     )
 
 
-def build_correction_prompt(original, previous_fixed, issues):
+def build_correction_prompt(original, previous_fixed, issues, code_lang="python"):
     """Turn the detected API problems into a prompt asking the LLM to output the
     revised complete code."""
     issues_text = "\n".join(f"{i + 1}. {_format_issue(it)}" for i, it in enumerate(issues))
@@ -487,12 +239,12 @@ the revised **complete code**.
 
 ## Original code (the fix scope; the output must stay aligned to this scope, keep every
 other line byte-for-byte)
-```python
+```{code_lang}
 {original}
 ```
 
 ## Your previously output fixed code (contains the above problems)
-```python
+```{code_lang}
 {previous_fixed}
 ```
 
@@ -507,7 +259,7 @@ other line byte-for-byte)
    per the suggestion.
 
 ## Output format
-A one-sentence explanation outside the code block + a ```python code block
+A one-sentence explanation outside the code block + a ```{code_lang} code block
 (the corrected complete code)
 """
 
@@ -515,15 +267,22 @@ A one-sentence explanation outside the code block + a ```python code block
 def run_verification(original, fixed, system, opts=None):
     """Main API verification flow. Returns (final fixed_code, report text)."""
     opts = opts or {}
-    client = DeepseekV4FlashClient()
-    index = get_index(opts.get("tvm_root"))
-    tvm_root = opts.get("tvm_root") or detect_tvm_root()
+    mod = get_backend(opts.get("backend"))
+    root, index, _mod = get_index(mod.NAME, opts.get("api_root"))
     max_rounds = int(opts.get("rounds", 2))
     no_review = bool(opts.get("no_review"))
+    code_lang = opts.get("code_lang") or "python"
+    client = DeepseekV4FlashClient()
 
     report = []
     report.append("# API Verification Report (autorepair)\n")
-    report.append(f"- tvm source root: `{tvm_root}`")
+    report.append(f"- backend: {mod.NAME}")
+    if index:
+        report.append(f"- API source root: `{root}`")
+        report.append(f"- static index: {mod.describe_index(index)}")
+    else:
+        report.append(f"- static index: none -- {mod.ROOT_ENV} is not set to a "
+                      f"{mod.ROOT_HINT}, so only the runtime check and the LLM review run")
     report.append(f"- verification method: existence check (static scan of the source "
                   f"tree + runtime inspect)"
                   f"{' + LLM misuse review' if not no_review else ' (LLM review skipped)'}")
@@ -533,17 +292,17 @@ def run_verification(original, fixed, system, opts=None):
     done_ok = False
     for round_idx in range(max_rounds + 1):
         added = list(added_lines(original, cur))
-        calls = extract_api_calls_from_lines(added) or extract_api_calls(cur)
+        calls = mod.extract_calls("\n".join(added), index) or mod.extract_calls(cur, index)
         calls = sorted(set(calls))
 
         report.append(f"## Round {round_idx} check\n")
         if not calls:
-            report.append("The added/changed lines introduce no new dotted API calls; "
+            report.append("The added/changed lines introduce no new API calls; "
                           "nothing to verify.\n")
             done_ok = True
             break
 
-        results = [resolve(c, index) for c in calls]
+        results = [mod.resolve(c, index) for c in calls]
         missing = []
         used = []
         report.append("| API | Result | Note |")
@@ -553,19 +312,22 @@ def run_verification(original, fixed, system, opts=None):
                 used.append(c)
                 report.append(f"| `{c}` | ✓ exists | namespace `{r[1]}` |")
             elif r[0] == "missing":
-                st, ns, leaf, info, close = r
-                ns_size = len(info["names"]) if isinstance(info, dict) else 0
+                _st, ns, leaf, info, close = r
                 close_txt = f"; similar: {', '.join(close)}" if close else ""
+                if isinstance(info, dict):
+                    note = f"namespace `{ns}` has {len(info['names'])} APIs; " \
+                           f"`{leaf}` not found"
+                else:
+                    note = "not declared anywhere in the scanned sources"
                 missing.append((c, "missing", r))
-                report.append(f"| `{c}` | ❌ **nonexistent** | namespace `{ns}` has "
-                              f"{ns_size} APIs; `{leaf}` not found{close_txt} |")
+                report.append(f"| `{c}` | ❌ **nonexistent** | {note}{close_txt} |")
             else:
                 report.append(f"| `{c}` | ? unverifiable | namespace not indexed / "
-                              f"intermediate level unknown |")
+                              f"relative qualifier unknown |")
 
         verdicts = []
         if not no_review and used:
-            verdicts, raw = review_usage(original, cur, used, index, client)
+            verdicts, _raw = review_usage(original, cur, used, index, mod, client, code_lang)
             report.append(f"\n### LLM misuse review ({len(used)} APIs)\n")
             for v in verdicts:
                 ok = v.get("correct", True)
@@ -593,7 +355,7 @@ def run_verification(original, fixed, system, opts=None):
                           "result)\n")
             break
 
-        corr_prompt = build_correction_prompt(original, cur, issues)
+        corr_prompt = build_correction_prompt(original, cur, issues, code_lang)
         report.append("### Correction prompt\n```text\n" + corr_prompt[:2000] + "\n```\n")
         resp = client.model_prediction(corr_prompt, system=system)
         new = _extract_code(resp)
@@ -607,53 +369,37 @@ def run_verification(original, fixed, system, opts=None):
         report.append("Not fully passed in the end (missing/misused APIs remain or the "
                       "round limit was reached).\n")
 
-    report_text = "\n".join(report)
-    return cur, report_text
+    return cur, "\n".join(report)
 
 
 # ---------------------------------------------------------------- self-test
 
 
-def self_test():
-    root = detect_tvm_root()
-    print(f"tvm source root: {root}")
+def self_test(backend=None):
+    mod = get_backend(backend)
+    root = mod.detect_root()
+    print(f"backend: {mod.NAME}")
+    print(f"{mod.ROOT_ENV}: {root}")
     if not root:
-        print("!! tvm source not found; cannot self-test")
+        print(f"!! source tree not found; set {mod.ROOT_ENV} to {mod.ROOT_HINT}")
         return 1
-    idx = get_index(root)
-    print(f"indexed namespaces: {len(idx)}")
-    for ns in sorted(idx.keys()):
-        print(f"  {ns:22s} APIs={len(idx[ns]['names'])}")
 
-    cases = [
-        ("relax.op.add", "ok"),
-        ("relax.op.zeros", "ok"),
-        ("relax.op.nn.prelu", "ok"),
-        ("relax.op.foobar", "missing"),
-        ("relax.const", "ok"),
-        ("topi.nn.pad", "ok"),
-        ("topi.nn.foobar", "missing"),
-        ("tirx.IntImm", "ok"),
-        ("np.mean", "ok"),
-        ("_np.stack", "ok"),
-        ("functools.reduce", "ok"),
-        ("relax.op.foo.bar", "unverifiable"),
-    ]
+    _root, index, _mod = get_index(mod.NAME, root)
+    print(f"index: {mod.describe_index(index)}")
+
     print("\n== resolution self-test ==")
     fail = 0
-    for name, expect in cases:
-        r = resolve(name, idx)
-        st = r[0]
-        tag = "PASS" if st == expect else "FAIL"
+    for name, expect in mod.SELF_TEST_CASES:
+        st = mod.resolve(name, index)[0]
         if st != expect:
             fail += 1
-        print(f"  [{tag}] {name:22s} -> {st:12s} (expected {expect})")
-    print(f"\n{len(cases) - fail}/{len(cases)} passed")
+        print(f"  [{'PASS' if st == expect else 'FAIL'}] {name:46s} -> "
+              f"{st:12s} (expected {expect})")
+    print(f"\n{len(mod.SELF_TEST_CASES) - fail}/{len(mod.SELF_TEST_CASES)} passed")
     return 0 if fail == 0 else 1
 
 
 if __name__ == "__main__":
-    import sys
-
+    arg = next((a for a in sys.argv[1:] if not a.startswith("-")), None)
     if "--self-test" in sys.argv:
-        sys.exit(self_test())
+        sys.exit(self_test(arg))

@@ -88,9 +88,24 @@ def ask_text(title, optional=False):
     return text or None
 
 
+# Language tag for the code fences, per backend. Without this the prompt asks for a
+# python block -- and the extraction is tuned for one -- even when the converter under
+# repair is C++.
+CODE_FENCE_LANG = {
+    "TVM": "python",
+    "OPENVINO": "cpp",
+}
+
+
+def fence_lang(backend):
+    """Fence language for `backend`, defaulting to python for an unknown name."""
+    return CODE_FENCE_LANG.get((backend or "").strip().upper(), "python")
+
+
 def build_prompt(backend, frontend, op, code, doc, cause):
     """Repair prompt: only asks for the 'fixed code'; the diff format is generated
     externally by the program."""
+    lang = fence_lang(backend)
     cause_block = cause or ("(not provided) analyze the root cause from the 'Original "
                             "code' and 'Key documentation information' below.")
     return f"""# Fix the defect in the {backend}-{frontend} frontend converter "{op}"
@@ -99,7 +114,7 @@ def build_prompt(backend, frontend, op, code, doc, cause):
 {cause_block}
 
 ## 2. Original code (to be fixed; the fix must preserve the full extent of this code)
-```python
+```{lang}
 {code}
 ```
 
@@ -121,14 +136,15 @@ itself. Please follow this contract:
 4. If the information is insufficient to determine the fix, state outside the code block
    what is missing; do not fabricate.
 
-Output format: an explanation outside the code block + a ```python code block
+Output format: an explanation outside the code block + a ```{lang} code block
 (the complete fixed code)
 """
 
 
 def extract_code(response):
-    """Extract the ```python code block from the response (preserving the first line's
-    indentation); return the whole response if there is no fence."""
+    """Extract the first fenced code block from the response (the fence language is not
+    enforced; the first line's indentation is preserved). Returns the whole response when
+    there is no fence."""
     m = CODE_FENCE_RE.search(response)
     return (clean_block(m.group(1)) + "\n") if m else clean_block(response) + "\n"
 
@@ -226,8 +242,9 @@ def main():
                          "review/correction")
     ap.add_argument("--verify-rounds", type=int, default=2,
                     help="max API correction rounds (default 2)")
-    ap.add_argument("--tvm-root", help="tvm source python/tvm directory (defaults to the "
-                                       "TVM_PYTHON_ROOT environment variable)")
+    ap.add_argument("--api-root", help="source tree scanned by the API existence check "
+                                       "(defaults to the backend's own environment "
+                                       "variable: TVM_PYTHON_ROOT / OPENVINO_SRC_ROOT)")
     args = ap.parse_args()
 
     backend = args.backend or ask_line("Backend", "TVM")
@@ -280,7 +297,8 @@ def main():
         fixed_code, api_report = api_check.run_verification(
             code, fixed_code, system,
             {"rounds": args.verify_rounds, "no_review": args.no_review,
-             "tvm_root": args.tvm_root},
+             "backend": backend, "api_root": args.api_root,
+             "code_lang": fence_lang(backend)},
         )
         with open(os.path.join(outdir, "api_check.md"), "w", encoding="utf-8") as f:
             f.write(api_report)

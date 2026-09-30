@@ -15,7 +15,9 @@ instructions (avoiding the problem of non-applicable diffs).
 | File | Role |
 |---|---|
 | `repair.py` | Main script: manual input → build prompt → call LLM → code → patch → API verification |
-| `api_check.py` | API verification: namespace existence check (static scan of the source tree + runtime inspect) + LLM misuse review + correction loop |
+| `api_check.py` | API verification driver: existence check + LLM misuse review + correction loop |
+| `api_index_tvm.py` | TVM backend for the verifier: index from the Python package re-exports, dotted-call extraction, resolution |
+| `api_index_openvino.py` | OpenVINO backend: index from C++ declaration sites, `::`-call extraction, resolution |
 | `llm_client.py` | `DeepseekV4FlashClient` + exponential-backoff retry |
 
 ## Manual inputs
@@ -57,8 +59,11 @@ API-verification arguments:
 - `--no-review`: only run the static existence check; skip the LLM misuse
   review/correction (saves LLM calls).
 - `--verify-rounds N`: correction round limit (default 2).
-- `--tvm-root PATH`: tvm source `python/tvm` directory (defaults to the
-  `TVM_PYTHON_ROOT` environment variable).
+- `--api-root PATH`: source tree scanned by the existence check, for the backend given
+  to `--backend`. Defaults to that backend's own environment variable:
+  `TVM_PYTHON_ROOT` (its `python/tvm` directory) or `OPENVINO_SRC_ROOT` (the checkout
+  root). Without either, the static check is skipped and only the runtime check and the
+  LLM review run.
 
 ## Output
 
@@ -83,7 +88,30 @@ independently by differential or reproduction testing. No repair cases are shipp
 
 Against the LLM's **fabrication** of APIs (using APIs that do not exist) and **misuse**
 (using existing APIs incorrectly), verification + correction runs automatically after
-the patch is generated:
+the patch is generated.
+
+The check is per backend. `api_check.py` is only the driver -- how calls are extracted,
+how the index is built and how a name is resolved lives in `api_index_tvm.py` and
+`api_index_openvino.py`, selected by `--backend`. Both build their index by **statically
+scanning the source tree** of the framework under audit, since neither is importable in
+the analysis environment:
+
+* **TVM** indexes the Python package re-exports: for each namespace, the names that the
+  package's `__init__.py` re-exports plus the `def`s in its own modules.
+* **OpenVINO** indexes C++ declaration sites: operators under
+  `src/core/include/openvino/op/` (the header's innermost `namespace vN` is the opset
+  the converters refer to as `v1::Add`), the rest of `src/core/include/openvino/`, and
+  the frontend helpers under `src/frontends/{onnx,pytorch,paddle,common_translators}`.
+  A call is extracted either as a `::`-qualified path or as a bare name, and
+  `make_shared<v0::Clamp>` is picked up too, since that is how ops are usually built.
+
+A backend only reports **nonexistent** where its index is complete enough for that
+verdict to be trustworthy; everywhere else it answers **unverifiable** rather than
+guessing. In particular the OpenVINO backend does not resolve a call qualified by a
+short name (`detail::conv(`, `internal::X(`): that qualifier is relative to the
+namespace of the file the snippet came from, which the verifier never sees, and
+expanding it would land in a same-named namespace elsewhere and flag a real API as
+fabricated.
 
 1. **Extraction**: extract `a.b.c(...)`-style dotted API calls from the **added/changed
    lines** of the fixed code (the `+` lines of the diff).
