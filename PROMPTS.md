@@ -245,6 +245,42 @@ Its system prompt is `You are a meticulous {backend} frontend developer reviewin
 
 ### 5.3 Correction prompt
 
-Sent when the review or the existence check found a problem. Lists each problem with its
-evidence, repeats the original code and the previous output, and constrains the model to
-touch only the lines related to those problems and to use only APIs that exist.
+Sent when the review or the existence check found a problem. Each problem is rendered as
+either `❌ **nonexistent API**: <name> -- <where>` or `⚠ **suspected misuse**: <name> --
+<issue>` before being listed.
+
+    # Fix the API problems in the previous repair round (autorepair automatic
+    verification feedback)
+
+    Your previous repair round has the following API problems. Fix each one, then re-output
+    the revised **complete code**.
+
+    ## Detected problems
+    {issues_text}
+
+    ## Original code (the fix scope; the output must stay aligned to this scope, keep every
+    other line byte-for-byte)
+    ```{code_lang}
+    {original}
+    ```
+
+    ## Your previously output fixed code (contains the above problems)
+    ```{code_lang}
+    {previous_fixed}
+    ```
+
+    ## Correction constraints
+    1. Modify only the lines directly related to the above problems; preserve every other
+       line (comments, blank lines, indentation, function signatures) byte-for-byte.
+    2. Only use APIs that actually exist in this version; do not introduce a nonexistent
+       API or misuse an API again.
+    3. For a nonexistent API: use an equivalent existing API or an implementation approach
+       already used in the codebase.
+    4. For a misused API: fix the parameter types/count/semantics or the return handling
+       per the suggestion.
+
+    ## Output format
+    A one-sentence explanation outside the code block + a ```{code_lang} code block
+    (the corrected complete code)
+
+It reuses the misuse-review system prompt above.
