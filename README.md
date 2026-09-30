@@ -97,8 +97,26 @@ it never imports the framework.
 - **TVM**: the `apache/tvm` repository. The pipeline reads `python/tvm/relax/frontend`,
   which holds the ONNX and PyTorch frontends.
 
-**(b) Documentation dumps.** Step 4 looks up each operator in its framework's reference
-documentation, one plain-text dump per frontend. Build them and place them like this:
+**(b) Documentation dumps — at the version the compiler implements.** Step 4 looks up each
+operator in its framework's reference documentation, one plain-text dump per frontend.
+Which version of that documentation you scrape matters:
+
+- The audit judges each side against **its own framework's** specification; that is what
+  makes a specification difference a Standard Gap rather than a Bug (Prompt 3, criterion
+  4). A dump taken from a **newer** version than the converter implements therefore turns
+  intended behaviour into a false Bug, and one taken from an **older** version hides real
+  gaps.
+- The two pipelines need not be on the same version. For ONNX, TVM implements converters
+  up to **opset 23** (`_impl_v23` in `onnx_frontend.py`, selected per model by
+  `get_converter(cls, opset)`, which picks the largest implemented version at or below the
+  model's opset), while the `OPSET_RANGE`s OpenVINO's converters register reach **opset
+  19**. Each pipeline's `onnxdoc.txt` should match its own range, which is why the two
+  keep separate `docxes/` directories instead of sharing one.
+- To read the version off a checkout: for ONNX, the highest `_impl_vN` method in the
+  frontend, or the `OPSET_RANGE(lo, hi)` a converter registers with. Torch and Paddle
+  have no opset, so take the framework release the frontend was written against.
+
+Build the dumps and place them like this:
 
     openvino/docxes/  onnxdoc.txt  torchdoc.txt  paddledoc.txt  jaxdoc.txt
     tvm/docxes/       onnxdoc.txt  torchdoc.txt
