@@ -1,96 +1,333 @@
-# Frontend Converter Consistency Audit Method (LLM-Based Two-Stage Audit)
+# Frontend Converter Consistency Audit — tool and experimental setup
 
-## 1. Method Overview
+This repository provides the tool and the experimental setup for our work on auditing
+the **frontend converters** of AI inference tool stacks for consistency: the same
+operator is implemented once per frontend (ONNX / PyTorch / Paddle), those
+implementations are compared, and the differences that survive a code-level comparison
+are checked against each framework's own documentation, so a genuine compliance bug can
+be told apart from a specification gap and from a false positive.
 
-This method uses a large language model (LLM) to audit the **frontend converters (Converter)** of AI inference deployment and acceleration tool stacks for consistency: it automatically extracts the converter implementations of the same operator across different frontends (ONNX / PyTorch / Paddle, etc.), first runs an LLM-based **code-level consistency comparison**, and for operator pairs judged "inconsistent," retrieves the official documentation for a **documentation-based deep audit**. The difference is finally classified as Bug / Standard Gap / Optimization Difference / Inconclusive, thereby locating potential compliance bugs in the frontend implementation while suppressing false positives.
+Two audit pipelines and one repair component are shipped:
 
-Beyond detection, the method also includes an automated repair component — **autorepair** (`autorepair/`) — that feeds the LLM-attributed error cause, the original code to fix, and key documentation back into the LLM to produce a fix patch, with deterministic patch generation and automatic API verification (see Section 5).
+| | Tool stack | Language | Frontends |
+|---|---|---|---|
+| `tvm/` | TVM Relax | Python | onnx / torch |
+| `openvino/` | OpenVINO | C++ | onnx / torch / paddle |
+| `autorepair/` | repair and API verification, both tool stacks | | |
 
-The audit method has been deployed and validated on two tool stacks:
+---
 
-| Test Object | Source Language | Covered Frontends |
+## 1. Method
+
+### 1.1 Converters are paired, then judged twice
+
+Step 1 extracts the converter implementation of every operator from each frontend of the
+tool stack under audit, and pairs same-name operators across frontends by text
+similarity on the operator name (LCS ≥ 0.85). Each pair then goes through two LLM
+judgments:
+
+- **Prompt 1 — code consistency.** The two implementations are put side by side and the
+  LLM answers whether they are logically equivalent.
+- **Prompt 3 — documentation-based deep audit.** Run only for pairs judged *not*
+  equivalent. Each implementation is read against its own framework's documentation, the
+  full semantic constraint set is extracted on both sides, and the difference is
+  attributed to Bug / Standard Gap / Optimization Difference / Inconclusive.
+
+### 1.2 Code expansion sits between them
+
+Many converters are thin wrappers: the body delegates to a helper defined in another
+file, or to a base class. Given only the wrapper, the LLM reads the delegation as missing
+logic and reports a false Bug, so Step 2 asks the LLM which external definitions a
+converter needs (Prompt 2), locates those definitions in the source tree deterministically
+— regex and brace matching for C++, AST for Python — and appends them under a comment
+banner before the original body. Both sides of a pair are expanded, so both judgments see
+code with complete semantics.
+
+### 1.3 Repair
+
+`autorepair/` takes an attributed root cause, the code to fix and the relevant
+documentation, asks the LLM for the fixed code, generates the patch itself with
+`difflib` (the prompt never asks the LLM for a diff format), and then verifies the APIs
+the fix uses before accepting it.
+
+---
+
+## 2. Reproducibility
+
+### 2.0 Repository layout
+
+    .
+    ├── tvm/                    audit pipeline for TVM          (Python frontends)
+    ├── openvino/               audit pipeline for OpenVINO     (C++ frontends)
+    ├── autorepair/             repair + API verification
+    ├── requirements.txt        pinned dependencies
+    └── README.md
+
+The two pipelines are independent, self-contained copies: each has its own `main.py`,
+`llm_client.py` and helper modules, so either can be run without the other. Files the
+runs read or write are **not** shipped and are listed as you go below.
+
+### 2.1 Build the environment
+
+Python ≥ 3.9 (`autorepair/tvm/api_index.py` uses `ast.unparse`).
+
+    pip install -r requirements.txt
+
+The pins matter: the audit verdicts come from an LLM, so a different client version is a
+different experiment. See 2.6.
+
+### 2.2 Supply the inputs
+
+Three things are needed before a run; none of them are in this repository.
+
+**(a) A source checkout of the tool stack.** The pipeline reads this tree directly —
+it never imports the framework.
+
+- **OpenVINO**: the `openvino` repository, any recent checkout. The pipeline reads
+  `src/frontends/{onnx,pytorch,paddle}/…/op`.
+- **TVM**: the `apache/tvm` repository. The pipeline reads `python/tvm/relax/frontend`,
+  which holds the ONNX and PyTorch frontends.
+
+**(b) Documentation dumps.** Step 4 looks up each operator in its framework's reference
+documentation, one plain-text dump per frontend. Build them and place them like this:
+
+    openvino/docxes/  onnxdoc.txt  torchdoc.txt  paddledoc.txt  jaxdoc.txt
+    tvm/docxes/       onnxdoc.txt  torchdoc.txt
+
+  The format is: operator reference pages concatenated, each block introduced by its URL
+  and separated from the next by a line of exactly 50 `=` characters.
+
+      operator reference dump
+      ==================================================
+      https://example.invalid/operators/Add.html
+      ==================================================
+      Add computes element-wise addition of two inputs. Both inputs must have the
+      same shape (numpy-style broadcasting since opset 7).
+      ==================================================
+      https://example.invalid/operators/Sub.html
+      ==================================================
+      Sub computes element-wise subtraction. Inputs must share a shape.
+      ==================================================
+
+  The operator name is taken from the URL's last path segment, so the URL has to end in
+  the operator name (`.../Add.html`, or `.../add__Add.html` under the ONNX convention).
+  Lookups are lenient — names are lowercased, underscores and trailing digits stripped,
+  and a small table of cross-framework variants (`cum_sum`/`cumsum`, `reshape2`/`reshape`,
+  `BatchNormalization`/`batch_norm`, …) is consulted — and the highest-scoring block
+  wins. A frontend with no dump is not an error: Step 4 records the pair as
+  documentation-not-matched, which is flag `8` in Section 4.
+
+**(c) An API key.** Each client class in `llm_client.py` ships with the placeholder
+`[Your own API key]`; replace it with your key for that provider. `autorepair/` also
+accepts `DEEPSEEK_API_KEY` from the environment.
+
+### 2.3 Point the code at your checkouts
+
+The pipelines are the authors' working copies with machine-specific paths replaced by
+placeholders. Nothing runs until they are filled in:
+
+| Placeholder | In | Replace with |
 |---|---|---|
-| `openvino/` | C++ (`cpp`) | onnx / torch / paddle |
-| `tvm/` | Python (`python`) | onnx / torch |
+| `[your tvm source root]` | `tvm/main.py`, `tvm/extract_function.py`, `autorepair/tvm/api_index.py` | the `python/tvm` directory of your TVM checkout |
+| `[your openvino source root]` | `openvino/main.py` | the root of your OpenVINO checkout, i.e. the directory holding `src/frontends/` |
+| `[this directory]` | `tvm/main.py`, `openvino/main.py`, `tvm/batch_run.py`, `openvino/batch_run.py` | the absolute path of the directory that file lives in; it is how `docxes/` and `results/` are found |
+| `[Your own API key]` | `tvm/llm_client.py`, `openvino/llm_client.py`, `autorepair/llm_client.py` | your key for that provider |
 
-## 2. Audit Pipeline
+### 2.4 Run an audit
 
-| Step | Action | Key Output |
+Model numbers, used by `run_with_model.py` and by `batch_run.py`:
+
+| # | Model | Endpoint |
 |---|---|---|
-| 0 | Select the LLM backend (DeepSeek / Qwen / GPT) | — |
-| 1 | Extract converters: parse the `convert_map` / API mapping table in the frontend source, extract the function/class implementations of same-name operators, and pair them by text similarity (>= 0.85) | Operator pairs |
-| 2 | Code expansion: the LLM determines whether the implementation depends on external helper code (Prompt 2), then searches and appends the dependency implementations in the source | Code with complete semantics |
-| 3 | First judgment: the LLM directly compares whether the two pieces of logic are equivalent (Prompt 1) | `[JUDGMENT]` |
-| 4 | Documentation retrieval: look up the documentation block matching the operator name in that frontend's documentation dump (`docxes/*.txt`, which you supply — see 7.3) | Documentation snippet |
-| 5 | Second judgment: the LLM combines both pieces of code with both documents, extracts the complete semantic constraint set, and classifies the difference per the audit criteria (Prompt 3) | `[Final Conclusion]` |
+| 1 | DeepSeek Chat | `api.deepseek.com` |
+| 2 | Qwen3.7-Max | DashScope |
+| 3 | Qwen3.5-Flash | DashScope |
+| 4 | DeepSeek v4 Flash | `api.deepseek.com` |
+| 5 | GPT-5.4-mini | kamiapi.top |
 
-Steps 4 and 5 run only when Step 3 judges "not equivalent"; equivalent pairs pass directly.
+Pick a tool stack and run it. Interactive, choosing the model from a menu:
 
-## 3. Prompts (Core)
+    python tvm/main.py
+    python openvino/main.py
 
-All LLM calls share the same system prompt; the main body consists of three prompt templates. The **generic templates** below use `{...}` placeholders; the differences between the two test objects are limited to how the placeholders are filled in (see 3.4).
+Non-interactive, one model, one run:
 
-### 3.0 System Prompt (Shared)
+    python tvm/run_with_model.py 4
+    python openvino/run_with_model.py 4
+
+The batch runner used for the paper: three models (4 = DeepSeek v4 Flash, 3 =
+Qwen3.5-Flash, 5 = GPT-5.4-mini), five runs each, the three models in parallel:
+
+    python tvm/batch_run.py
+    python openvino/batch_run.py
+
+It streams everything to `batch_run.log` in the same directory. A full run is
+LLM-bound: each pair costs one Prompt 1 call, and every pair that is judged
+non-equivalent costs a Prompt 2 call on each side plus a Prompt 3 call.
+
+### 2.5 Read the results
+
+Each run writes, next to the pipeline:
+
+    <tvm|openvino>/results/<model_name>/<timestamp>/
+        pairs_result.txt      one line per operator pair:  <pair> <code_match> <doc_match>
+        results_detail.txt    the full log: the Prompt 1 input and answer, the doc
+                              retrieval result, and the Prompt 3 output
+
+`pairs_result.txt` is the table the paper's numbers are counted from; the third field is
+the verdict code, defined in Section 4. For example, the bug candidates of a run are the
+lines with `doc_match == 0`:
+
+    awk '$3 == 0 {print $1}' tvm/results/deepseek-v4-flash/<timestamp>/pairs_result.txt
+
+### 2.6 Run the repair
+
+`autorepair/` is driven by hand. Its inputs:
+
+| Input | Description |
+|---|---|
+| `backend` | tool stack under repair: `TVM` or `OPENVINO` |
+| `frontend` | frontend: onnx / torch / paddle … |
+| `op` | operator name, e.g. `Flatten` |
+| `code` | the original code to fix — only the part related to the buggy operator |
+| `doc` | the documentation relevant to the fix (optional) |
+| `cause` | the root cause attributed by the audit (optional; without it the repair model reasons from the code and docs itself) |
+| `--src-file` | path of the real source file (optional): anchors the patch to it so the line numbers are real |
+
+    cd autorepair
+
+    # build the prompt and print it, without calling the model
+    python repair.py --dry-run
+
+    # fully interactive: enter each input, multiline values ended by a line EOF
+    python repair.py
+
+    # non-interactive
+    python repair.py --backend TVM --frontend onnx --op Flatten \
+                     --code-file code.py --doc-file doc.txt --cause-file cause.txt \
+                     --src-file path/to/onnx_frontend.py
+
+Pass `--src-file` as a source-root-relative path: the patch header is rewritten to the
+same relative form, so it applies with `patch -p1` from the source root. Each case goes to
+`repairs/{backend}_{frontend}_{op}/`: `prompt.txt` is written as soon as the prompt is
+built — `--dry-run` stops there — and a real run adds `response.md`, `fixed.py`,
+`fix.patch` and, unless `--no-verify` was given, `api_check.md`. The script prints
+`applyable=`;
+`True` means the patch carries real line numbers. Being applyable does not make a fix
+correct — verify it independently by differential or reproduction testing.
+
+API verification runs automatically after the patch is generated (Section 5). It needs a
+source tree to scan:
+
+    export TVM_PYTHON_ROOT=/path/to/tvm/python/tvm       # for --backend TVM
+    export OPENVINO_SRC_ROOT=/path/to/openvino           # for --backend OPENVINO
+
+or pass `--api-root`. Without one, the static half is skipped. `--no-verify` skips
+verification entirely; `--no-review` keeps the deterministic check but drops the LLM
+misuse review; `--verify-rounds N` bounds the correction rounds (default 2). You can
+exercise the index and the resolution logic without any LLM call:
+
+    python api_check.py --self-test tvm
+    python api_check.py --self-test openvino
+
+---
+
+## 3. Prompts
+
+All four audit calls share one system prompt. `{...}` marks a value substituted at call
+time. Where the two tool stacks differ — which is only in Prompt 2 at any length, plus
+four spots in Prompt 3 — both versions are given.
+
+### 3.0 System prompt (all calls)
 
     You are a compiler expert. Compare code logic carefully.
 
-### 3.1 Prompt 1: Code Consistency Comparison (Step 3)
+### 3.1 Prompt 1 — code consistency comparison (Step 3)
 
     Are the following two function/class logic equivalent?
-    The converter function/class in {ToolStack} {FrontendA} frontend is:
+    The converter function/class in {ToolStack} {source_front} frontend is:
     ```{CodeLanguage}
-    {Function/Class A Code (with Expanded Dependencies)}
+    {source_func}
     ```
 
-    The converter function/class in {ToolStack} {FrontendB} frontend is:
+    The converter function/class in {ToolStack} {target_front} frontend is:
     ```{CodeLanguage}
-    {Function/Class B Code (with Expanded Dependencies)}
+    {target_func}
     ```
 
     Output format:
     - If equivalent, end with: [JUDGMENT] EQUIVALENT
     - If not equivalent, end with: [JUDGMENT] NONEQUIVALENT
 
-> Prompts exceeding 10,000 tokens are skipped (flagged as `skipped`).
+The prompt is skipped, and the pair flagged `9`, when it exceeds 10,000 words.
 
-### 3.2 Prompt 2: Dependency Code Identification (Step 2)
+### 3.2 Prompt 2 — dependency identification (Step 2)
 
-    You are a {ToolStack} compiler frontend code analysis expert. Please analyze whether the operator conversion code of the following {Frontend} frontend requires helper code defined in other files to gain complete semantics:
+**TVM** (`tvm/code_expander.py`), six rules:
 
-    ```{CodeLanguage}
-    {OperatorCode}
+    You are a TVM Relax compiler frontend code analysis expert. Please analyze whether the operator conversion code of the following {front_name} frontend requires helper code defined in other files to gain complete semantics:
+
+    ```python
+    {code_body}
     ```
 
     [Analysis Rules]
-    1. Check whether the function/class body calls helper functions or base classes defined in other files (excluding the standard library and framework built-ins).
-    2. If it is a class definition `class X(BaseY)`, check whether the base class `BaseY` needs to be expanded; if `BaseY` itself inherits from other classes, list them as well.
-    3. Pay special attention to "thin wrappers": a function that directly `return`s the result of another function, or delegates its core logic to a shared utility function / base class.
-    4. Do NOT list: the standard library ({StandardLibraryExamples}), or framework built-ins ({FrameworkBuiltinExamples}).
-    5. External dependencies may be defined in: other files in the same operator directory, or shared modules under the frontend root ({SharedHelperExamples}).
-    6. Only list dependencies essential for understanding the core logic.
+    1. If it is a class definition (class X(BaseY)), check whether the base class BaseY needs to be expanded; if BaseY itself inherits from other classes, list them as well.
+    2. Check whether the function/class body calls other helper functions or classes defined within the same package (excluding built-in functions and TVM framework functions).
+    3. Do NOT list standard-library modules (os, math, typing, etc.) or TVM built-in modules (relax.op, tvm, tir, etc.).
+    4. The external dependencies to list may be defined in: other files in the same frontend directory (e.g., onnx_frontend.py), or shared modules under the frontend root relax/frontend (e.g., utility functions in common.py).
+    5. If a function/class is just a thin wrapper whose real logic lives in some shared utility function or base class, be sure to list that utility function/base class as a dependency.
+    6. Only list base class names or helper function names essential for understanding the core logic.
 
     [Output Format]
     If there are key external dependencies, output one line: `[DEPS]: dep_name1, dep_name2`
     If not needed, output: `[DEPS]: NONE`
 
-### 3.3 Prompt 3: Documentation-Based Deep Audit (Step 5)
+**OpenVINO** (`openvino/code_expander.py`), five rules — there is no C++ counterpart to
+the base-class rule, the call-detection rule carries a concrete example, and the closing
+rule is absent:
 
-    You are a compiler compliance audit expert, responsible for verifying that the deep learning frontend converters (Converter) in the AI inference deployment and acceleration tool stack ({ToolStack}) fully conform to their official standard specifications.
+    You are an OpenVINO compiler code analysis expert. Please analyze whether the operator code of the following {front_name} frontend requires helper code defined in other files to gain complete semantics:
+
+    ```cpp
+    {code_body}
+    ```
+
+    [Analysis Rules]
+    1. Check whether the function body calls functions/classes defined in other files.
+    2. Pay special attention to: a function that directly returns the result of another function (e.g., `return reverse_op(node);`) and calls to helper functions in other files.
+    3. Do NOT list standard-library functions (with the std:: prefix) or OpenVINO framework built-in classes (with the ov:: prefix, NodeContext, etc.).
+    4. The external dependencies to list may be defined in: other files in the same operator directory (src/op), utils.cpp/utils.hpp under the frontend src directory (e.g., get_inputs_with_promoted_types, get_shape_rank, normalize_axis, make_list_construct, etc.), or the shared directory common_translators (e.g., common_translators::translate_atan2_util).
+    5. If a function is just a thin wrapper whose real logic lives in some shared utility function, be sure to list that utility function as a dependency.
+
+    [Output Format]
+    If there are key external dependencies, output one line: `[DEPS]: dep_name1, dep_name2`
+    If not needed, output: `[DEPS]: NONE`
+
+### 3.3 Prompt 3 — documentation-based deep audit (Step 5)
+
+Shown for TVM. The OpenVINO version differs in exactly four places: the two code fences
+say `cpp`, the opening sentence names OpenVINO and reads "the implementation … fully
+conforms to its official standard specification", the audit task names OpenVINO, and the
+example in criterion 3 is `common_translators::xxx, utils::xxx, etc.` instead of
+"utility functions in common.py under relax/frontend, base classes in onnx_frontend.py".
+
+    You are a compiler compliance audit expert, responsible for verifying that the deep learning frontend converters (Converter) in the AI inference deployment and acceleration tool stack (TVM) fully conform to their official standard specifications.
 
     [Audit Task]
-    We detected an inconsistency between frontend A and frontend B in {ToolStack}.
+    We detected an inconsistency between frontend A and frontend B in TVM.
     [Preliminary Code Difference Conclusion]:
-    {First-Round Consistency Conclusion & Explanation}
-    {Code Snippets (with Expanded Dependencies)}
+    {op_pair_info}
+    {code_section}
 
     [Reference Documents]
-    Frontend A framework documentation: {Frontend A Documentation}
-    Frontend B framework documentation: {Frontend B Documentation}
+    Frontend A framework documentation: {A_doc}
+    Frontend B framework documentation: {B_doc}
 
     [Audit Criteria (strictly enforced to prevent false positives)]
     1. [Hard prerequisite for a Bug verdict]: Only when you can point out, in the code, a [concrete behavior] of one side that deviates from the behavior defined in its own documentation, on [inputs that conform to its own documentation] (e.g., a missing branch, an unhandled pattern, a parameter silently ignored and producing wrong output), may you mark [Bug]. You must cite a specific code location or construct.
     2. [An extension is not a Bug]: If one side's implementation supports types, input forms, or attributes beyond its documented specification (i.e., the implementation is a [superset] of the specification), and behaves correctly on standard inputs conforming to the specification, this is an [intentional extension / compatibility handling]; mark [Standard Gap] or [Optimization Difference], and [must NOT] mark [Bug].
-    3. [Delegation / thin wrapper is not a Bug]: If one side's implementation is merely a thin wrapper that delegates its core logic to a shared utility function or base class (e.g., {SharedHelperExamples}), and that utility function's implementation is not included in the code provided, so you [cannot confirm its logic], you [must NOT] mark [Bug] merely because you "did not see the implementation." Mark [Inconclusive] or [Standard Gap].
+    3. [Delegation / thin wrapper is not a Bug]: If one side's implementation is merely a thin wrapper that delegates its core logic to a shared utility function or base class (e.g., utility functions in common.py under relax/frontend, base classes in onnx_frontend.py, etc.), and that utility function's implementation is not included in the code provided, so you [cannot confirm its logic], you [must NOT] mark [Bug] merely because you "did not see the implementation." Mark [Inconclusive] or [Standard Gap].
     4. [A framework-spec difference is a Standard Gap]: When the behavioral difference between the two frontends stems entirely from differences between the two frameworks' specifications themselves (e.g., argument order, opset version semantics, naming), and each side's code faithfully implements its own framework's specification, mark [Standard Gap].
     5. [When evidence is insufficient]: When the evidence is insufficient to determine that one side has an implementation defect, mark [Inconclusive]; do not guess, and do not force a Bug just to "find an inconsistency".
 
@@ -108,254 +345,150 @@ All LLM calls share the same system prompt; the main body consists of three prom
     3. [Final conclusion]:
     Format requirement (must end with this): [Final Conclusion]: [Bug] or [Standard Gap] or [Optimization Difference] or [Inconclusive].
 
-### 3.4 Instantiating the Generic Templates (OpenVINO vs TVM)
+`{code_section}` is the two expanded implementations, fenced with `{CodeLanguage}`.
 
-| Placeholder | OpenVINO | TVM |
+### 3.4 Repair prompts
+
+**Fix prompt** (`autorepair/repair.py`). Note that it asks for code, never for a diff:
+
+    # Fix the defect in the {backend}-{frontend} frontend converter "{op}"
+
+    ## 1. Root cause of the defect (attribution)
+    {cause_block}
+
+    ## 2. Original code (to be fixed; the fix must preserve the full extent of this code)
+    ```{lang}
+    {code}
+    ```
+
+    ## 3. Key documentation information (only what is needed for the fix)
+    {doc}
+
+    ## 4. Output: the complete fixed code
+    The patch is generated automatically by the program; you only need to output the code
+    itself. Please follow this contract:
+    1. Scope alignment: output the complete code in the same scope as the "Original code";
+       modify only the lines directly related to the root cause; preserve every other line
+       (comments, blank lines, indentation, function signatures) byte-for-byte; do not
+       reorder, rename, or refactor along the way.
+    2. Only use operators/interfaces that actually exist in this {backend} version. Prefer
+       the concrete implementation approach given in "Key documentation information"; if
+       unsure whether an API exists, use an equivalent low-level implementation (e.g., a
+       topi operator + `bb.emit_te`), and note it outside the code block.
+    3. Outside the code block, first explain the root cause and the change in one sentence.
+    4. If the information is insufficient to determine the fix, state outside the code block
+       what is missing; do not fabricate.
+
+    Output format: an explanation outside the code block + a ```{lang} code block
+    (the complete fixed code)
+
+Its system prompt is `You are a meticulous {backend} frontend converter developer. Write
+minimal surgical fixes: preserve every untouched line byte-for-byte, never rename or
+restructure code, and never use APIs that may not exist in this {backend} version.`
+
+**Misuse review** (`autorepair/api_check.py`). Given the original code, the added lines,
+and for each API the declaration and comment block found at its definition site, the
+model answers with JSON. Its criteria are: a parameter name, type or count that does not
+match the signature; a return type or semantics the call site does not expect; a
+deviation from codebase conventions; or an API that does not exist in this version.
+
+**Correction prompt** (`autorepair/api_check.py`). Lists the problems found in the
+previous round with their evidence, repeats the original code and the previous output,
+and constrains the model to modify only the lines related to those problems, to use only
+APIs that exist, and to re-output the complete code.
+
+---
+
+## 4. Verdict flags
+
+`pairs_result.txt` carries two flags per pair, `code_match` and `doc_match`.
+
+First round, code consistency:
+
+| LLM output | Meaning | `code_match` |
 |---|---|---|
-| {ToolStack} | OpenVINO | TVM (Relax) |
-| {CodeLanguage} | cpp | python |
-| {StandardLibraryExamples} | `std::`-prefixed functions | os / math / typing, etc. |
-| {FrameworkBuiltinExamples} | `ov::`-prefixed classes, NodeContext, etc. | relax.op, tvm, tir, etc. |
-| {SharedHelperExamples} | `utils.cpp` / `utils.hpp` under the frontend src (get_inputs_with_promoted_types, normalize_axis, etc.), shared directory `common_translators` (e.g., `common_translators::translate_atan2_util`) | utility functions in `common.py` under `relax/frontend`, base classes in `onnx_frontend.py` (e.g., `BinaryBase`) |
-| Code extraction method | Scan `.cpp` files by directory | Parse `convert_map` + AST to extract functions/classes |
+| `[JUDGMENT] EQUIVALENT` | logically equivalent, no second round | 1 |
+| `[JUDGMENT] NONEQUIVALENT` | not equivalent, go to the second round | 0 |
+| (oversize skip) | prompt over 10,000 words | 9 |
 
-All other rules, execution steps, and output formats are identical and require no changes.
+Second round, documentation audit:
 
-## 4. Verdicts and Result Flags
-
-### First Round (Code Consistency, code_match)
-
-| LLM Output | Meaning | Flag |
+| Final conclusion | Meaning | `doc_match` |
 |---|---|---|
-| `[JUDGMENT] EQUIVALENT` | Logically equivalent | 1 |
-| `[JUDGMENT] NONEQUIVALENT` | Not equivalent, proceed to the second round | 0 |
-| (Oversize skip) | Prompt > 10,000 tokens | 9 |
+| `[Bug]` | not aligned with its own documentation — **bug candidate** | 0 |
+| `[Standard Gap]` / `[Optimization Difference]` | specification or optimization difference, not a bug | 1 |
+| (documentation not found) | no matching operator in the dump | 8 |
+| `[Inconclusive]` / unparsed | insufficient evidence | 9 |
 
-### Second Round (Documentation Deep Audit, doc_match)
+Pairs that passed the first round are written as `(1, 1)` — their `doc_match` is a
+pass-through and does not mean "standard gap". Count non-bug differences with
+`code_match == 0 and doc_match == 1`, or they are mixed in.
 
-| Final Conclusion | Meaning | Flag |
-|---|---|---|
-| `[Bug]` | One side's implementation not aligned with its own documentation, **Bug candidate** | 0 |
-| `[Standard Gap]` / `[Optimization Difference]` | Specification / optimization difference, not a Bug | 1 |
-| (Documentation not found) | No matching operator in the doc dump | 8 |
-| `[Inconclusive]` / unparsed | Insufficient evidence | 9 |
+---
 
-## 5. Repair: autorepair
+## 5. API verification in `autorepair/`
 
-**autorepair** (`autorepair/`) is the repair component: it feeds the **error cause attributed by the LLM + the original code to fix + key documentation information** into the LLM, which calls DeepSeek v4 Flash to repair TVM / OpenVINO frontend converter defects.
+After a patch is generated, the calls on its added lines are resolved against a static
+index of the tool stack's own source tree — read, never imported, since these frameworks
+are normally not importable in the analysis environment. Two shapes are extracted: for
+TVM, dotted calls (`relax.op.add(`); for OpenVINO, `::`-qualified calls (`ov::op::v1::Add(`,
+`v1::Add(`) plus bare frontend helper names and the type argument of
+`std::make_shared<v0::Clamp>`. Method calls (`node.get_ov_inputs()`) and names the snippet
+defines itself are skipped.
 
-**Design point**: the prompt **contains no diff-format requirements** — it only asks the LLM to output the 'fixed code'. The patch format (`--- a/` file headers, hunk line numbers) is generated automatically by the program from the real source file with difflib, deterministically, so it does not depend on the LLM following format instructions (avoiding the problem of non-applicable diffs).
+Each call resolves to one of three states:
 
-### 5.1 Files
+- **ok** — it exists, and its declaration goes to the LLM for the misuse review;
+- **missing** — the namespace is indexed and complete enough for this verdict, so the
+  call is a fabrication;
+- **unverifiable** — the index cannot settle it. Reported instead of a guess, so a real
+  API that merely was not enumerated is never called fabricated. The OpenVINO backend
+  answers this for a call qualified by a short name (`detail::conv(`): that qualifier is
+  relative to the file the snippet came from, which the verifier never sees.
 
-| File | Role |
-|---|---|
-| `repair.py` | Main script: manual input → build prompt → call LLM → code → patch → API verification |
-| `api_check.py` | API verification driver: existence check (static index of the backend's source tree + runtime inspect) + LLM misuse review + correction loop |
-| `tvm/api_index.py` | TVM backend for the verifier: index built from the Python package re-exports, dotted-call extraction, resolution |
-| `openvino/api_index.py` | OpenVINO backend: index built from C++ declaration sites, `::`-call extraction, resolution |
-| `llm_client.py` | `DeepseekV4FlashClient` + exponential-backoff retry |
+Anything found missing or misused is fed back for a correction round, up to
+`--verify-rounds`.
 
-### 5.2 Manual inputs
+The index is built from the checkout named by `TVM_PYTHON_ROOT` or `OPENVINO_SRC_ROOT`
+(2.6). For TVM it comes from the package re-exports in each `__init__.py` plus the defs
+in the package's own modules; for OpenVINO, from C++ declaration sites — the operator
+headers under `src/core/include/openvino/op/`, where the header's innermost `namespace vN`
+is the opset the converters refer to as `v1::Add`, the rest of
+`src/core/include/openvino/`, and the frontend helpers under
+`src/frontends/{onnx,pytorch,paddle,common_translators}`.
 
-| Input | Description |
-|---|---|
-| `backend` | Backend: TVM / OPENVINO |
-| `frontend` | Frontend: onnx / torch / paddle ... |
-| `op` | Operator name: e.g., Flatten |
-| `code` | Original code to fix (**only the parts related to the buggy operator, i.e., what needs modification**) |
-| `doc` | Key documentation information (**only what is needed for the fix**, optional) |
-| `cause` | Error cause attributed by the LLM (optional; if omitted, the repair LLM analyzes it on its own) |
-| `--src-file` | Path to the real source file (optional): anchors the patch to the real file and automatically computes line numbers to generate an applicable diff |
+**Verification boundary.** It checks that an API exists and is used consistently with its
+signature; it does not catch a semantic regression in a shared code path — a fix that
+hard-codes a base class's behaviour for one operator still passes. That belongs to the
+fix prompt's scope contract, not to this check.
 
-### 5.3 Usage
+---
 
-```bash
-# 1) Fully interactive: enter each item (multiline code/doc terminated by a line of EOF)
-python repair.py
+## 6. Code structure
 
-# 2) Only build and print the prompt, no LLM call (inspect the prompt design first)
-python repair.py --dry-run
+    tvm/                            audit pipeline, TVM (Python frontends)
+      main.py                       pipeline: Steps 0-5
+      extract_function.py           Step 1  parse convert_map + AST
+      code_expander.py              Step 2  dependency expansion (Prompt 2)
+      consistency_checker.py        Step 3  consistency comparison (Prompt 1)
+      doc_retriever.py              Step 4  documentation lookup
+      doc_analyzer.py               Step 5  documentation audit (Prompt 3)
+      llm_client.py                 model clients behind one proxy
+      batch_run.py                  batch runner
+      run_with_model.py             non-interactive single run
 
-# 3) All arguments given (non-interactive); code/doc/cause can be passed as files
-python repair.py --backend TVM --frontend onnx --op Flatten \
-                 --code-file code.py --doc-file doc.txt --cause-file cause.txt \
-                 --src-file python/tvm/relax/frontend/onnx/onnx_frontend.py
-```
+    openvino/                       audit pipeline, OpenVINO (C++ frontends), same layout
 
-`--backend` defaults to `TVM`; if omitted, it is entered interactively. `--code-file` and the other file arguments are mutually exclusive with interactive input. Pass `--src-file` preferably as a **source-root-relative path** (e.g., `python/tvm/relax/frontend/onnx/onnx_frontend.py`); the patch header is converted to a source-root-relative path so it can be applied with `patch -p1` from the source root.
+    autorepair/                     repair component
+      repair.py                     prompt → model → code → patch → verification
+      api_check.py                  verification driver
+      tvm/api_index.py              index and call extraction for TVM
+      openvino/api_index.py         index and call extraction for OpenVINO
+      llm_client.py                 one client, with backoff
 
-API-verification arguments:
-- `--no-verify`: skip API verification entirely (existence check + misuse review + correction loop).
-- `--no-review`: only run the static existence check; skip the LLM misuse review/correction (saves LLM calls).
-- `--verify-rounds N`: correction round limit (default 2).
-- `--api-root PATH`: source tree scanned by the existence check, for the backend given to `--backend`. Defaults to that backend's own environment variable — `TVM_PYTHON_ROOT` or `OPENVINO_SRC_ROOT` (see 7.2); `--no-verify` skips the check.
+Not shipped, because you supply them or the runs produce them:
 
-### 5.4 Output
-
-`repairs/{backend}_{frontend}_{op}/`:
-
-| File | Content |
-|---|---|
-| `prompt.txt` | The full prompt sent to the LLM (reproducible, no format requirements) |
-| `response.md` | Raw LLM response |
-| `fixed.py` | The complete code block fixed by the LLM |
-| `fix.patch` | The unified diff generated by the program with difflib |
-| `api_check.md` | API verification report (per-round existence results / misuse review / correction rounds) |
-
-The script prints `applyable=`: `True` means the patch is anchored to the real source file with correct line numbers (`patch -p1` can apply it); `False` means no `--src-file` was given or the original code snippet was not matched in the source file (falls back to a snippet-level diff). A patch being applyable does not make it correct — verify the fix independently by differential or reproduction testing.
-
-### 5.5 API verification (automatic; disabled with `--no-verify`)
-
-Against the LLM's **fabrication** of APIs (using APIs that do not exist) and **misuse** (using existing APIs incorrectly), verification + correction runs automatically after the patch is generated:
-
-1. **Extraction**: extract `a.b.c(...)`-style dotted API calls from the **added/changed lines** of the fixed code (the `+` lines of the diff).
-2. **Existence check (deterministic, no LLM)**: resolve each call's namespace (e.g., `relax.op.add` → `relax.op`), get the **full API list** of that namespace, and see whether `add` is among them.
-   - Because tvm cannot be `import`ed locally, TVM namespaces (`relax.op` / `topi.nn` / `tirx`, 231 / 113 / 320 APIs) build the list by **statically scanning the source tree**: parse each package's `__init__.py` re-exports (`from .X import (a, b, ...)`) plus in-package `def` names (`topi`'s `from .X import *` star exports are expanded by scanning the imported files).
-   - Modules that can be imported (numpy / functools / ...) are checked with the standard `inspect` mechanism.
-   - Runtime objects such as `attr.` / `bb.` are out of scope (`attr` fabrication is caught by the heuristic check below).
-3. **Misuse review (LLM)**: for each used API, extract its signature + docstring (AST, from the definition file), and have the LLM judge, together with the original code and the added lines, whether the parameter names/types/count/semantics match and whether the usage deviates from codebase conventions.
-4. **Correction loop**: when there is a 'nonexistent API' or 'suspected misuse', design the detected information (including the namespace's API count, similar APIs, and the LLM's suggestion) into a prompt and feed it back to the LLM, asking it to re-output the complete code after modification, then verify again; iterate until it passes or reaches `--verify-rounds` (default 2).
-
-Regression-verified against known weak points:
-- `relax.op.addd` (fabricated) → the static check returns ❌ nonexistent (similar: add); after correction, changed to `relax.op.add`;
-- `relax.op.zeros(x_shape)` (missing the required `dtype`) → the review returns ⚠ misuse; after correction, `dtype='float32'` was added;
-- `relax.op.zeros(x_shape, x.ty.dtype)` → the review returns ✓ correct (the `zeros` signature is `dtype: str | DataType`; passing a DataType object is legal) — resolving the earlier unverified question of "whether zeros accepts it";
-- `attr.get_int_tuple` (fabricated) → caught by the `check_attr_accessors` heuristic (below).
-
-**Verification boundary (no false positives)**: verification targets only "whether the API exists / is misused". It does **not** catch semantic regressions in shared code paths (e.g., the Mean fix hard-coding `cls.numpy_op` to `np.mean`, where `np.mean` itself is real and used correctly) — such issues belong to the prompt-contract layer (which must constrain "not changing the semantics of the shared base class for other operators").
-
-#### Heuristic check (existing)
-
-If the fixed code introduces `attr.<method>(` calls not used by the original code (e.g., `attr.get_int_tuple()` / `attr.get_int()`), a `[warn]` is printed. Such methods are often fabricated by the LLM (a frontend attr is usually a dict, only `attr.get(...)` exists); when hit, confirm manually, and use `attr.get(...)` if unsure.
-
-### 5.6 Repair cases
-
-No repair cases are shipped. `repair.py` creates `repairs/{backend}_{frontend}_{op}/`
-next to itself on its first run and writes the files listed in 5.4 into it; treat the
-whole directory as a run artifact, not as part of this repository.
-
-## 6. Code Structure
-
-    .
-    ├── tvm/                       # Test object 1: TVM (Python frontends)
-    │   ├── main.py                # Main flow
-    │   ├── extract_function.py    # Step 1: Extract converters
-    │   ├── code_expander.py       # Step 2: Dependency code expansion (Prompt 2)
-    │   ├── consistency_checker.py # Step 3: Consistency comparison (Prompt 1)
-    │   ├── doc_retriever.py       # Step 4: Documentation retrieval
-    │   ├── doc_analyzer.py        # Step 5: Documentation-based deep audit (Prompt 3)
-    │   ├── llm_client.py          # Unified LLM backend interface
-    │   ├── batch_run.py           # Batch runner (3 models in parallel)
-    │   └── run_with_model.py      # Non-interactive run with a specified model
-    ├── openvino/                  # Test object 2: OpenVINO (C++ frontends)
-    │   └── ...                    # Same structure as tvm/
-    └── autorepair/                # Repair component
-        ├── repair.py              # prompt → LLM → code → patch → API verification
-        ├── api_check.py           # verifier driver: check + review + correction loop
-        ├── tvm/api_index.py       #   TVM backend for the verifier
-        ├── openvino/api_index.py  #   OpenVINO backend for the verifier
-        ├── llm_client.py          # DeepseekV4FlashClient + exponential-backoff retry
-        └── repairs/               # Repair cases produced by the method
-
-Not shipped, because they are inputs you supply or outputs you produce:
-
-    <tvm|openvino>/docxes/         # Documentation dumps read by Step 4 (see 7.3)
-    <tvm|openvino>/results/        # Audit results, written by main.py, one dir per run
-
-## 7. Setup
-
-### 7.1 Replace the placeholders
-
-This is the authors' working copy. Machine-specific values have been replaced by
-placeholders, and nothing runs until you edit them:
-
-| Placeholder | In | Replace with |
-|---|---|---|
-| `[your openvino source root]` | `openvino/main.py` | Root of an OpenVINO checkout — the directory containing `src/frontends/` |
-| `[your tvm source root]` | `tvm/main.py`, `tvm/extract_function.py`, `autorepair/api_check.py` | The `python/tvm` directory of a TVM checkout |
-| `[this directory]` | `tvm/main.py`, `openvino/main.py`, `tvm/batch_run.py`, `openvino/batch_run.py` | Absolute path of the directory that file lives in; it is how `docxes/` and `results/` are located |
-| `[Your own API key]` | `tvm/llm_client.py`, `openvino/llm_client.py`, `autorepair/llm_client.py` | Your key for the provider that client talks to |
-
-### 7.2 Source checkouts
-
-Both pipelines read the framework source directly rather than importing it:
-
-- **OpenVINO** — a checkout of the `openvino` repository, any recent version. `main.py`
-  points at `src/frontends/{onnx,pytorch,paddle}/…/op`.
-- **TVM** — a checkout of `apache/tvm`. `main.py` points at `python/tvm/relax/frontend`,
-  which is where the ONNX and PyTorch frontends live.
-
-`autorepair/` needs a checkout of the backend it is verifying too, but only for the API
-existence check; it scans the tree statically rather than importing it. Point
-`TVM_PYTHON_ROOT` at a TVM `python/tvm` directory, or `OPENVINO_SRC_ROOT` at an OpenVINO
-checkout root (README §5.5).
-
-### 7.3 Documentation dumps
-
-Step 4 reads one dump per frontend. The dumps are not shipped here — they are large
-scraped snapshots of each framework's reference documentation — so build them and place
-them next to the code:
-
-    openvino/docxes/  onnxdoc.txt  torchdoc.txt  paddledoc.txt  jaxdoc.txt
-    tvm/docxes/       onnxdoc.txt  torchdoc.txt
-
-A dump is plain text: operator reference pages concatenated, each block separated by a
-line of exactly 50 `=` characters and introduced by the page's URL. The operator name is
-read from the URL's last path segment, so the URL must end in the operator name
-(`.../Add.html`, or `.../add__Add.html` under the ONNX convention).
-
-    operator reference dump
-    ==================================================
-    https://example.invalid/operators/Add.html
-    ==================================================
-    Add computes element-wise addition of two inputs. Both inputs must have the
-    same shape (numpy-style broadcasting since opset 7).
-    ==================================================
-    https://example.invalid/operators/Sub.html
-    ==================================================
-    Sub computes element-wise subtraction. Inputs must share a shape.
-    ==================================================
-
-Names are matched leniently — lowercased, underscores and trailing digits stripped,
-plus a table of known cross-framework variants such as `cum_sum`/`cumsum` — and the
-highest-scoring block wins. A frontend whose dump is missing is not an error: Step 4
-reports the pair as documentation-not-matched, which is flag `8` in Section 4.
-
-### 7.4 Dependencies
-
-    pip install -r requirements.txt        # Python >= 3.9
-
-Only two packages are needed: `openai`, used by both pipelines and by `autorepair/` to
-reach the model APIs, and `Levenshtein`, used to score operator-name similarity. Both are
-**pinned** in `requirements.txt` — the verdicts depend on the LLM backend, so a different
-client version is a different experiment.
-
-`openai` must be recent enough to provide `client.responses`, which the two Qwen clients
-call; the 1.0 line does not have it. `Levenshtein` is the maintained distribution for
-`import Levenshtein` (`python-Levenshtein` is its old name and no longer ships wheels for
-recent Pythons).
-
-### 7.5 API keys
-
-Keys are not stored in this repository. Each client class in `llm_client.py` ships with
-the `[Your own API key]` placeholder from 7.1 to replace. `autorepair/llm_client.py`
-additionally reads `DEEPSEEK_API_KEY` from the environment and falls back to the same
-placeholder.
-
-## 8. Running
-
-    # TVM
-    python tvm/main.py                      # interactive model selection
-    python tvm/run_with_model.py 4          # non-interactive, model 4
-    python tvm/batch_run.py                 # 3 models x 5 runs, in parallel
-
-    # OpenVINO
-    python openvino/main.py
-    python openvino/batch_run.py
-
-    # Repair
-    cd autorepair
-    python repair.py --dry-run                          # build the prompt, no LLM call
-    python repair.py --backend TVM --frontend onnx --op Flatten \
-                     --code-file code.py --src-file path/to/onnx_frontend.py
+    <tvm|openvino>/docxes/          documentation dumps read by Step 4      (2.2b)
+    <tvm|openvino>/results/         audit results, one directory per run    (2.5)
+    <tvm|openvino>/batch_run.log    batch runner log                        (2.4)
+    autorepair/repairs/             repair cases                            (2.6)
