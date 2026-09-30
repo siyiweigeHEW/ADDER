@@ -1,0 +1,4 @@
+# Only needed by get_doc_dumps.py, the one-off scraper that builds the documentation
+# dumps. The audit pipelines themselves need requirements.txt and nothing here.
+requests==2.32.5
+beautifulsoup4>=4.9

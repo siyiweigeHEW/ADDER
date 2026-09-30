@@ -116,7 +116,17 @@ Which version of that documentation you scrape matters:
   frontend, or the `OPSET_RANGE(lo, hi)` a converter registers with. Torch and Paddle
   have no opset, so take the framework release the frontend was written against.
 
-Build the dumps and place them like this:
+`get_doc_dumps.py` builds them: it walks the reference index page of a framework, fetches
+each operator page it links to, and concatenates them in the format above. Each framework's
+index page is a placeholder in that script — put in the one you want to scrape, from
+whichever edition matches the version you settled on. Its dependencies are separate, since
+only this one-off script needs them:
+
+    pip install -r requirements-doc-dumps.txt
+    python get_doc_dumps.py --out tvm/docxes onnx torch
+    python get_doc_dumps.py --out openvino/docxes onnx torch paddle jax
+
+The dumps go where the pipeline expects them:
 
     openvino/docxes/  onnxdoc.txt  torchdoc.txt  paddledoc.txt  jaxdoc.txt
     tvm/docxes/       onnxdoc.txt  torchdoc.txt
@@ -494,6 +504,9 @@ fix prompt's scope contract, not to this check.
 ## 6. Code structure
 
     README.md                       this file
+    get_doc_dumps.py                builds the documentation dumps (2.2b)
+    requirements.txt                dependencies of the pipelines
+    requirements-doc-dumps.txt      dependencies of the scraper only
     tvm/                            audit pipeline, TVM (Python frontends)
       README.md                     the TVM pipeline in more detail
       main.py                       pipeline: Steps 0-5
