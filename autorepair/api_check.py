@@ -17,9 +17,9 @@ exist) and 'misuse' (using an existing API incorrectly):
    fixed code after modification; iterate until it passes or reaches the round limit.
 
 This module is the driver: everything backend-specific -- how calls are extracted, how
-the index is built, how a name is resolved -- comes from the backend modules
-(`api_index_tvm`, `api_index_openvino`), which declare the interface below. Adding a
-backend means adding one such module and registering it in `BACKENDS`.
+the index is built, how a name is resolved -- comes from the backend modules, one per
+tool stack under `tvm/` and `openvino/`, which declare the interface below. Adding a
+backend means adding one such directory and listing it in `_BACKEND_DIRS`.
 
 A backend module provides:
 
@@ -44,6 +44,7 @@ Self-test: `python api_check.py --self-test [backend]` (no LLM; exercises the st
 index and the resolution logic).
 """
 import difflib
+import importlib.util
 import json
 import os
 import re
@@ -53,15 +54,29 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
-import api_index_openvino  # noqa: E402
-import api_index_tvm  # noqa: E402
 from llm_client import DeepseekV4FlashClient  # noqa: E402
 
-BACKENDS = {
-    api_index_tvm.NAME.upper(): api_index_tvm,
-    api_index_openvino.NAME.upper(): api_index_openvino,
-}
-DEFAULT_BACKEND = api_index_tvm.NAME.upper()
+_BACKEND_DIRS = ("tvm", "openvino")
+
+
+def _load_backend(subdir):
+    """Load one backend module from its own directory.
+
+    The backends live in `tvm/` and `openvino/` and are both called `api_index`, so they
+    are loaded by path under distinct module names. Importing them as packages would
+    need `autorepair/tvm/__init__.py`, and `autorepair/` is on `sys.path` here, so that
+    would shadow the real `tvm` package for anything running from this directory.
+    """
+    path = os.path.join(_HERE, subdir, "api_index.py")
+    spec = importlib.util.spec_from_file_location(f"_api_index_{subdir}", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_BACKENDS = [_load_backend(d) for d in _BACKEND_DIRS]
+BACKENDS = {mod.NAME.upper(): mod for mod in _BACKENDS}
+DEFAULT_BACKEND = _BACKENDS[0].NAME.upper()
 
 CODE_FENCE_RE = re.compile(r"```[a-zA-Z0-9_-]*\s*\n(.*?)```", re.DOTALL)
 

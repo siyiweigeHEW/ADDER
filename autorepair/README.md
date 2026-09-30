@@ -16,8 +16,8 @@ instructions (avoiding the problem of non-applicable diffs).
 |---|---|
 | `repair.py` | Main script: manual input → build prompt → call LLM → code → patch → API verification |
 | `api_check.py` | API verification driver: existence check + LLM misuse review + correction loop |
-| `api_index_tvm.py` | TVM backend for the verifier: index from the Python package re-exports, dotted-call extraction, resolution |
-| `api_index_openvino.py` | OpenVINO backend: index from C++ declaration sites, `::`-call extraction, resolution |
+| `tvm/api_index.py` | TVM backend for the verifier: index from the Python package re-exports, dotted-call extraction, resolution |
+| `openvino/api_index.py` | OpenVINO backend: index from C++ declaration sites, `::`-call extraction, resolution |
 | `llm_client.py` | `DeepseekV4FlashClient` + exponential-backoff retry |
 
 ## Manual inputs
@@ -91,8 +91,8 @@ Against the LLM's **fabrication** of APIs (using APIs that do not exist) and **m
 the patch is generated.
 
 The check is per backend. `api_check.py` is only the driver -- how calls are extracted,
-how the index is built and how a name is resolved lives in `api_index_tvm.py` and
-`api_index_openvino.py`, selected by `--backend`. Both build their index by **statically
+how the index is built and how a name is resolved lives in `tvm/api_index.py` and
+`openvino/api_index.py`, selected by `--backend`. Both build their index by **statically
 scanning the source tree** of the framework under audit, since neither is importable in
 the analysis environment:
 

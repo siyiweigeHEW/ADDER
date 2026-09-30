@@ -4,7 +4,6 @@ Usage: python3 run_with_model.py <model_number>
   model_number: 1=DeepSeek Chat, 2=Qwen3.7-Max, 3=Qwen3.5-Flash, 4=DeepSeek v4 Flash, 5=GPT-5.4-mini
 """
 import sys
-import os
 
 model_num = sys.argv[1] if len(sys.argv) > 1 else "3"
 

@@ -152,8 +152,8 @@ All other rules, execution steps, and output formats are identical and require n
 |---|---|
 | `repair.py` | Main script: manual input → build prompt → call LLM → code → patch → API verification |
 | `api_check.py` | API verification driver: existence check (static index of the backend's source tree + runtime inspect) + LLM misuse review + correction loop |
-| `api_index_tvm.py` | TVM backend for the verifier: index built from the Python package re-exports, dotted-call extraction, resolution |
-| `api_index_openvino.py` | OpenVINO backend: index built from C++ declaration sites, `::`-call extraction, resolution |
+| `tvm/api_index.py` | TVM backend for the verifier: index built from the Python package re-exports, dotted-call extraction, resolution |
+| `openvino/api_index.py` | OpenVINO backend: index built from C++ declaration sites, `::`-call extraction, resolution |
 | `llm_client.py` | `DeepseekV4FlashClient` + exponential-backoff retry |
 
 ### 5.2 Manual inputs
@@ -253,8 +253,8 @@ whole directory as a run artifact, not as part of this repository.
     └── autorepair/                # Repair component
         ├── repair.py              # prompt → LLM → code → patch → API verification
         ├── api_check.py           # verifier driver: check + review + correction loop
-        ├── api_index_tvm.py       #   TVM backend for the verifier
-        ├── api_index_openvino.py  #   OpenVINO backend for the verifier
+        ├── tvm/api_index.py       #   TVM backend for the verifier
+        ├── openvino/api_index.py  #   OpenVINO backend for the verifier
         ├── llm_client.py          # DeepseekV4FlashClient + exponential-backoff retry
         └── repairs/               # Repair cases produced by the method
 
