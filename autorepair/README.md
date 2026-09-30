@@ -164,7 +164,9 @@ exists); when hit, confirm manually, and use `attr.get(...)` if unsure.
 
 ## Environment
 
-- Only needs the `openai` package: `pip install openai` (recommended:
-  `conda activate tvm-env`)
-- API key: `DEEPSEEK_API_KEY` environment variable takes precedence; when unset, the
-  built-in fallback key in `llm_client.py` is used.
+- Packages: `openai` and `Levenshtein`, both pinned in the repository's
+  `requirements.txt`. This component calls `client.chat.completions` only, so it does
+  not need the `client.responses` support the audit pipelines' Qwen clients rely on.
+- API key: `DEEPSEEK_API_KEY` takes precedence; when it is unset, `llm_client.py`
+  falls back to the `[Your own API key]` placeholder, which has to be replaced before
+  the client can be constructed.

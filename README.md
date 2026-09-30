@@ -324,10 +324,17 @@ reports the pair as documentation-not-matched, which is flag `8` in Section 4.
 
 ### 7.4 Dependencies
 
-    pip install openai python-Levenshtein
+    pip install -r requirements.txt        # Python >= 3.9
 
-`openai` is used by both pipelines and by `autorepair/`; `python-Levenshtein` by
-`main.py`, for operator-name similarity.
+Only two packages are needed: `openai`, used by both pipelines and by `autorepair/` to
+reach the model APIs, and `Levenshtein`, used to score operator-name similarity. Both are
+**pinned** in `requirements.txt` — the verdicts depend on the LLM backend, so a different
+client version is a different experiment.
+
+`openai` must be recent enough to provide `client.responses`, which the two Qwen clients
+call; the 1.0 line does not have it. `Levenshtein` is the maintained distribution for
+`import Levenshtein` (`python-Levenshtein` is its old name and no longer ships wheels for
+recent Pythons).
 
 ### 7.5 API keys
 
