@@ -1,8 +1,8 @@
 # `autorepair/` — repair and API verification
 
-The repair component of this repository. What the audit method does, how to run it, and
-the prompts it uses are in the [root README](../README.md); this file is the reference for
-the repair half.
+The repair component of this repository. Running the audit, and the prompts it uses, are
+covered in the [root README](../README.md) and [../PROMPTS.md](../PROMPTS.md); this file is
+the reference for the repair half.
 
 It takes an attributed root cause, the code to fix and the relevant documentation, asks
 the model for the fixed code, builds the patch itself, and then verifies the APIs that fix
@@ -67,16 +67,42 @@ reproduction testing.
 
 ## API verification
 
-Described in full in the [root README §5](../README.md#5-api-verification-in-autorepair):
-how calls are extracted per backend, what the three resolution states mean, and where the
-check stops. In short, calls on the added lines are resolved against a static index of the
-tool stack's own source tree, anything found missing or misused is fed back for a
-correction round, and a verdict of *unverifiable* is used wherever the index cannot settle
-the question rather than guessing.
+After a patch is generated, the calls on its added lines are resolved against a static index
+of the tool stack's own source tree — read, never imported, since these frameworks are
+normally not importable in the analysis environment.
+
+Two shapes are extracted. For TVM, dotted calls (`relax.op.add(`). For OpenVINO,
+`::`-qualified calls (`ov::op::v1::Add(`, `v1::Add(`) plus bare frontend helper names and the
+type argument of `std::make_shared<v0::Clamp>`. Method calls (`node.get_ov_inputs()`) and
+names the snippet defines itself are skipped.
+
+Each call resolves to one of three states:
+
+- **ok** — it exists, and its declaration goes to the model for the misuse review;
+- **missing** — the namespace is indexed and complete enough for this verdict, so the call
+  is a fabrication;
+- **unverifiable** — the index cannot settle it. Reported instead of a guess, so a real API
+  that merely was not enumerated is never called fabricated. The OpenVINO backend answers
+  this for a call qualified by a short name (`detail::conv(`): that qualifier is relative to
+  the file the snippet came from, which the verifier never sees.
+
+Anything found missing or misused is fed back for a correction round, up to
+`--verify-rounds`.
+
+The index is built from the checkout named by `TVM_PYTHON_ROOT` or `OPENVINO_SRC_ROOT`: for
+TVM, the package re-exports plus the defs in each package's own modules; for OpenVINO, the
+C++ declaration sites — in particular the operator headers under
+`src/core/include/openvino/op/`, where the header's innermost `namespace vN` is the opset
+the converters refer to as `v1::Add`.
+
+**Boundary.** It checks that an API exists and is used consistently with its signature; it
+does not catch a semantic regression in a shared code path — a fix that hard-codes a base
+class's behaviour for one operator still passes. That belongs to the fix prompt's scope
+contract, not to this check.
 
 The two index backends live side by side under `tvm/` and `openvino/`, both named
-`api_index.py`; `api_check.py` loads them by path. Neither is importable as a package,
-which would put `autorepair/tvm` ahead of the real `tvm` on `sys.path`.
+`api_index.py`; `api_check.py` loads them by path. Neither is importable as a package, which
+would put `autorepair/tvm` ahead of the real `tvm` on `sys.path`.
 
 ## Environment
 

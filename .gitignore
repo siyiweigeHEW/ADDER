@@ -1,11 +1,11 @@
 __pycache__/
 *.py[cod]
 
-# Run artifacts (README 2.4-2.6)
+# Run artifacts (README steps 4-6)
 results/
 batch_run.log
 autorepair/repairs/
 
-# The documentation dumps you build yourself (README 2.2b). Uncomment if you would
+# The documentation dumps you build yourself (README step 2b). Uncomment if you would
 # rather keep them out of version control.
 # docxes/

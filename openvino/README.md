@@ -1,8 +1,8 @@
 # `openvino/` — audit pipeline for OpenVINO
 
-One of the two audit pipelines in this repository. The method itself, the prompts and the
-walkthrough from a bare checkout to results are in the [root README](../README.md); this
-file is the reference for what this pipeline does differently.
+One of the two audit pipelines in this repository. The walkthrough from a bare checkout to results is in the
+[root README](../README.md) and the prompts in [../PROMPTS.md](../PROMPTS.md); this file is
+the reference for what this pipeline does differently.
 
 - Language: C++
 - Frontends covered: **onnx**, **torch**, **paddle**
@@ -10,7 +10,7 @@ file is the reference for what this pipeline does differently.
 ## What it reads
 
 An OpenVINO checkout, at the path held by `[your openvino source root]` in `main.py` —
-see [2.3](../README.md#23-point-the-code-at-your-checkouts). It reads
+see [3](../README.md#3-point-the-code-at-your-checkouts). It reads
 `src/frontends/{onnx,pytorch,paddle}/…/op`.
 
 ## Step 1 — extracting converters
@@ -22,7 +22,7 @@ the file name. Files under the same operator directory that are not converters �
 headers and the like — are not picked up, since only `.cpp` is read.
 
 Converters are then paired across frontends by name similarity, and the pair goes through
-the two judgments described in the [root README §1](../README.md#1-method).
+the two judgments the pipeline names Step 3 and Step 5.
 
 ## Step 2 — code expansion
 
@@ -60,6 +60,6 @@ is appended, so a single header's worth of text does not enter the prompt.
     python openvino/run_with_model.py 4     # non-interactive, model 4
     python openvino/batch_run.py            # 3 models x 5 runs, in parallel
 
-Model numbers are in [2.4](../README.md#24-run-an-audit); the results layout and how to
-count bug candidates are in [2.5](../README.md#25-read-the-results). This run also needs
-`openvino/docxes/` — see [2.2](../README.md#22-supply-the-inputs).
+Model numbers are in [4](../README.md#4-run-an-audit); the results layout and how to
+count bug candidates are in [5](../README.md#5-read-the-results). This run also needs
+`openvino/docxes/` — see [2](../README.md#2-supply-the-inputs).

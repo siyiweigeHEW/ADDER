@@ -1,8 +1,8 @@
 # `tvm/` — audit pipeline for TVM Relax
 
-One of the two audit pipelines in this repository. The method itself, the prompts and the
-walkthrough from a bare checkout to results are in the [root README](../README.md); this
-file is the reference for what this pipeline does differently.
+One of the two audit pipelines in this repository. The walkthrough from a bare checkout to results is in the
+[root README](../README.md) and the prompts in [../PROMPTS.md](../PROMPTS.md); this file is
+the reference for what this pipeline does differently.
 
 - Language: Python
 - Frontends covered: **onnx**, **torch**
@@ -10,7 +10,7 @@ file is the reference for what this pipeline does differently.
 ## What it reads
 
 A TVM checkout, at the path held by `[your tvm source root]` in `main.py` and
-`extract_function.py` — see [2.3](../README.md#23-point-the-code-at-your-checkouts). It
+`extract_function.py` — see [3](../README.md#3-point-the-code-at-your-checkouts). It
 points at `python/tvm/relax/frontend`.
 
 ## Step 1 — extracting converters
@@ -33,7 +33,7 @@ The torch frontend is read as `base_fx_graph_translator.py` followed by
 second, so both are needed and the order is what makes the regex pick the right literal.
 
 Converters are then paired across frontends by name similarity, and the pair goes through
-the two judgments described in the [root README §1](../README.md#1-method).
+the two judgments the pipeline names Step 3 and Step 5.
 
 ## Step 2 — code expansion
 
@@ -63,6 +63,6 @@ source segment is appended, so the expanded prompt stays within the token budget
     python tvm/run_with_model.py 4          # non-interactive, model 4
     python tvm/batch_run.py                 # 3 models x 5 runs, in parallel
 
-Model numbers are in [2.4](../README.md#24-run-an-audit); the results layout and how to
-count bug candidates are in [2.5](../README.md#25-read-the-results). This run also needs
-`tvm/docxes/` — see [2.2](../README.md#22-supply-the-inputs).
+Model numbers are in [4](../README.md#4-run-an-audit); the results layout and how to
+count bug candidates are in [5](../README.md#5-read-the-results). This run also needs
+`tvm/docxes/` — see [2](../README.md#2-supply-the-inputs).
