@@ -81,29 +81,18 @@ placeholders. Nothing runs until they are filled in:
 
 ### 4. Run an audit
 
-Model numbers, used by `run_with_model.py` and by `batch_run.py`:
+The paper's results were produced with DeepSeek v4 Flash, model `4`. The other numbers —
+`1` DeepSeek Chat, `2` Qwen3.7-Max, `3` Qwen3.5-Flash, `5` GPT-5.4-mini — are only there to
+offer alternatives.
 
-| # | Model | Endpoint |
-|---|---|---|
-| 1 | DeepSeek Chat | `api.deepseek.com` |
-| 2 | Qwen3.7-Max | DashScope |
-| 3 | Qwen3.5-Flash | DashScope |
-| 4 | DeepSeek v4 Flash | `api.deepseek.com` |
-| 5 | GPT-5.4-mini | kamiapi.top |
+    python tvm/main.py                     # interactive, choose from a menu
+    python tvm/run_with_model.py 4         # non-interactive
+    python openvino/main.py
+    python openvino/run_with_model.py 4
 
-Interactive, choosing the model from a menu, or non-interactive with one model:
-
-    python tvm/main.py                          python tvm/run_with_model.py 4
-    python openvino/main.py                     python openvino/run_with_model.py 4
-
-The batch runner used for the paper — three models (4, 3, 5), five runs each, in parallel:
-
-    python tvm/batch_run.py
-    python openvino/batch_run.py
-
-It streams to `batch_run.log` beside it. A run is LLM-bound: every pair costs one Prompt 1
-call, and each pair judged non-equivalent costs a Prompt 2 call on each side plus a
-Prompt 3 call.
+`batch_run.py` runs several models in parallel, streaming to `batch_run.log` beside it. A
+run is LLM-bound: every pair costs one Prompt 1 call, and each pair judged non-equivalent
+costs a Prompt 2 call on each side plus a Prompt 3 call.
 
 ### 5. Read the results
 
