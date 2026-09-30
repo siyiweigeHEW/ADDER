@@ -1,6 +1,6 @@
 # `autorepair/` — repair and API verification
 
-The repair component of this repository. Running the audit, and the prompts it uses, are
+ADDER's repair component. Running the audit, and the prompts it uses, are
 covered in the [root README](../README.md) and [../PROMPTS.md](../PROMPTS.md); this file is
 the reference for the repair half.
 

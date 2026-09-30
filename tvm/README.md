@@ -1,6 +1,6 @@
 # `tvm/` — audit pipeline for TVM Relax
 
-One of the two audit pipelines in this repository. The walkthrough from a bare checkout to results is in the
+ADDER's TVM pipeline, one of the two audit pipelines in this repository. The walkthrough from a bare checkout to results is in the
 [root README](../README.md) and the prompts in [../PROMPTS.md](../PROMPTS.md); this file is
 the reference for what this pipeline does differently.
 

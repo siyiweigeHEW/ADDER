@@ -4,8 +4,8 @@ Every prompt the tool sends, verbatim. `{...}` marks a value substituted at call
 `[...]` marks a piece of text that differs between the two tool stacks, with the values
 tabulated below each template.
 
-Two pipelines share all of these. They differ only inside Prompt 2 and in four spots in
-Prompt 3, both marked where they occur.
+Two pipelines share all of these. They differ only inside Prompt 2, which is therefore
+written out once per tool stack, and in four spots in Prompt 3, marked where they occur.
 
 ## Contents
 
@@ -59,47 +59,54 @@ A prompt over 10,000 words is skipped rather than sent, and the pair is flagged 
 ## 3. Prompt 2: dependency identification
 
 Step 2. Asks which definitions outside the converter's own file the converter relies on,
-so Step 2 can append them before the comparison.
+so Step 2 can append them before the comparison. The two tool stacks get a different rule
+set, so the prompt is written out once per stack.
 
-    You are a [ToolStack] compiler frontend code analysis expert. Please analyze whether the [OperatorNoun] of the following {front_name} frontend requires helper code defined in other files to gain complete semantics:
+**TVM** (`tvm/code_expander.py`), six rules:
 
-    ```[CodeLanguage]
+    You are a TVM Relax compiler frontend code analysis expert. Please analyze whether the operator conversion code of the following {front_name} frontend requires helper code defined in other files to gain complete semantics:
+
+    ```python
     {code_body}
     ```
 
     [Analysis Rules]
-    1. [BaseClassRule]
-    2. [CallDetectionRule]
-    3. Do NOT list [StandardLibraryExamples] or [FrameworkBuiltinExamples].
-    4. The external dependencies to list may be defined in: [DependencyLocations].
+    1. If it is a class definition (class X(BaseY)), check whether the base class BaseY needs to be expanded; if BaseY itself inherits from other classes, list them as well.
+    2. Check whether the function/class body calls other helper functions or classes defined within the same package (excluding built-in functions and TVM framework functions).
+    3. Do NOT list standard-library modules (os, math, typing, etc.) or TVM built-in modules (relax.op, tvm, tir, etc.).
+    4. The external dependencies to list may be defined in: other files in the same frontend directory (e.g., onnx_frontend.py), or shared modules under the frontend root relax/frontend (e.g., utility functions in common.py).
     5. If a function/class is just a thin wrapper whose real logic lives in some shared utility function or base class, be sure to list that utility function/base class as a dependency.
-    6. [EssentialOnlyRule]
+    6. Only list base class names or helper function names essential for understanding the core logic.
 
     [Output Format]
     If there are key external dependencies, output one line: `[DEPS]: dep_name1, dep_name2`
     If not needed, output: `[DEPS]: NONE`
 
-The two tool stacks give rules 1 and 2 different content, rule 6 has no OpenVINO
-counterpart, and the opening line names the tool stack. Rules 3 to 5 are the same text
-for both.
+**OpenVINO** (`openvino/code_expander.py`), five rules — there is no C++ counterpart to
+the base-class rule, the call-detection rule carries a concrete example, and the closing
+rule is absent:
 
-| Placeholder | TVM | OpenVINO |
-|---|---|---|
-| `[ToolStack]` | `TVM Relax` | `OpenVINO` |
-| `[OperatorNoun]` | `operator conversion code` | `operator code` |
-| `[CodeLanguage]` | `python` | `cpp` |
-| `[BaseClassRule]` | If it is a class definition (class X(BaseY)), check whether the base class BaseY needs to be expanded; if BaseY itself inherits from other classes, list them as well. | Check whether the function body calls functions/classes defined in other files. |
-| `[CallDetectionRule]` | Check whether the function/class body calls other helper functions or classes defined within the same package (excluding built-in functions and TVM framework functions). | Pay special attention to: a function that directly returns the result of another function (e.g., `return reverse_op(node);`) and calls to helper functions in other files. |
-| `[StandardLibraryExamples]` | `os`, `math`, `typing`, etc. | functions with the `std::` prefix |
-| `[FrameworkBuiltinExamples]` | `relax.op`, `tvm`, `tir`, etc. | classes with the `ov::` prefix, `NodeContext`, etc. |
-| `[DependencyLocations]` | other files in the same frontend directory (e.g. `onnx_frontend.py`), or shared modules under the frontend root `relax/frontend` (e.g. utility functions in `common.py`) | other files in the same operator directory (`src/op`), `utils.cpp` / `utils.hpp` under the frontend src (e.g. `get_inputs_with_promoted_types`, `get_shape_rank`, `normalize_axis`, `make_list_construct`), or the shared `common_translators` directory (e.g. `common_translators::translate_atan2_util`) |
-| `[EssentialOnlyRule]` | Only list base class names or helper function names essential for understanding the core logic. | *(no such rule — the OpenVINO block ends at 5)* |
+    You are an OpenVINO compiler code analysis expert. Please analyze whether the operator code of the following {front_name} frontend requires helper code defined in other files to gain complete semantics:
 
-**Why the two differ here and not elsewhere.** The base-class rule exists because a TVM
-converter is often a class whose body is inherited (`class Add(BinaryBase)`), a pattern the
-C++ frontends do not have; conversely OpenVINO's rule 2 carries a call-shaped example
-(`return reverse_op(node);`) that has no Python counterpart. Rules 3 to 5 name concrete
-paths and APIs, which is why only their examples are placeholders.
+    ```cpp
+    {code_body}
+    ```
+
+    [Analysis Rules]
+    1. Check whether the function body calls functions/classes defined in other files.
+    2. Pay special attention to: a function that directly returns the result of another function (e.g., `return reverse_op(node);`) and calls to helper functions in other files.
+    3. Do NOT list standard-library functions (with the std:: prefix) or OpenVINO framework built-in classes (with the ov:: prefix, NodeContext, etc.).
+    4. The external dependencies to list may be defined in: other files in the same operator directory (src/op), utils.cpp/utils.hpp under the frontend src directory (e.g., get_inputs_with_promoted_types, get_shape_rank, normalize_axis, make_list_construct, etc.), or the shared directory common_translators (e.g., common_translators::translate_atan2_util).
+    5. If a function is just a thin wrapper whose real logic lives in some shared utility function, be sure to list that utility function as a dependency.
+
+    [Output Format]
+    If there are key external dependencies, output one line: `[DEPS]: dep_name1, dep_name2`
+    If not needed, output: `[DEPS]: NONE`
+
+**Why they differ.** A TVM converter is often a class whose body is inherited
+(`class Add(BinaryBase)`), which the C++ frontends do not have, so only TVM needs the
+base-class rule; conversely OpenVINO's rule 2 carries a call-shaped example
+(`return reverse_op(node);`) with no Python counterpart.
 
 ---
 

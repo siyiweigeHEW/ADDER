@@ -1,8 +1,8 @@
-# Frontend Converter Consistency Audit — tool and experimental setup
+# ADDER — auditing frontend converters for consistency
 
-This repository provides the tool and the experimental setup for our work on auditing the
-**frontend converters** of AI inference tool stacks for consistency. The method is
-described in the paper; this repository is the artefact that produced its results.
+ADDER is our method for auditing the **frontend converters** of AI inference tool stacks
+for consistency. This repository ships the tool and the experimental setup behind the
+paper; the method itself is described there.
 
 Two audit pipelines and one repair component are shipped:
 
