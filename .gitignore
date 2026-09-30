@@ -1,9 +1,10 @@
 __pycache__/
 *.py[cod]
 
-# Run artifacts (see README, Sections 6 and 8)
+# Run artifacts (see README, Sections 5.6, 6 and 8)
 results/
 batch_run.log
+autorepair/repairs/
 
 # The documentation dumps you build yourself (README 7.3). Uncomment if you would
 # rather keep them out of version control.

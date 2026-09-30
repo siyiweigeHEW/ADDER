@@ -76,7 +76,8 @@ The script prints `applyable=`: `True` means the patch is anchored to the real s
 file with correct line numbers (`patch -p1` can apply it); `False` means no `--src-file`
 was given or the original code snippet was not matched in the source file (falls back to
 a snippet-level diff). Fix correctness must be verified independently by
-differential/reproduction testing (see `repairs/TVM_onnx_Flatten/verify_fix.py`).
+independently by differential or reproduction testing. No repair cases are shipped:
+`repairs/` is created at runtime and is a run artifact.
 
 ## API verification (automatic; disabled with `--no-verify`)
 
@@ -124,7 +125,7 @@ API exists / is misused". It does **not** catch semantic regressions in shared c
 paths (e.g., the Mean fix hard-coding `cls.numpy_op` to `np.mean`, where `np.mean`
 itself is real and used correctly) — such issues belong to the prompt-contract layer
 (which must constrain "not changing the semantics of the shared base class for other
-operators"), see `repairs/test/SUMMARY.md`.
+operators").
 
 ### Heuristic check (existing)
 
