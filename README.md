@@ -21,6 +21,7 @@ Two audit pipelines and one repair component are shipped:
 | [`tvm/README.md`](tvm/README.md) | the TVM pipeline in detail |
 | [`openvino/README.md`](openvino/README.md) | the OpenVINO pipeline in detail |
 | [`autorepair/README.md`](autorepair/README.md) | the repair component and its API verification |
+| [`bugs.md`](bugs.md) | the bugs the audit found and reported upstream, with links |
 
 ---
 
@@ -167,6 +168,7 @@ pass-through and does not mean "standard gap". Count non-bug differences with
 
     README.md                       this file
     PROMPTS.md                      every prompt, verbatim
+    bugs.md                         the bugs reported upstream, with links
     get_doc_dumps.py                builds the documentation dumps (2b)
     requirements.txt                dependencies of the pipelines
     requirements-doc-dumps.txt      dependencies of the scraper only
