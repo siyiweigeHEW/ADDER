@@ -1,35 +1,31 @@
 # Previously unknown bugs uncovered by ADDER
 
-> [!IMPORTANT]
->
-> **Summary of Bugs**
->
-> | Tool stack | Frontend | #Confirmed | #Fixed | #Fixing | #Waiting |
-> |---|---|---|--:|--:|--:|--:|
-> | TVM | ONNX | 13 | 12 | 1 | 0 |
-> | TVM | PyTorch | 8 | 7 | 1 | 0 |
-> | TVM | Paddle | 1 | 1 | 0 | 0 |
-> | TVM | OneFlow | 2 | 2 | 0 | 0 |
-> | TVM | Keras | 1 | 1 | 0 | 0 |
-> | OpenVINO | ONNX | 9 | 3 | 5 | 0 |
-> | OpenVINO | PyTorch | 4 | 0 | 4 | 0 |
-> | OpenVINO | Paddle | 9 | 0 | 9 | 1 |
+## Summary
 
-> [!NOTE]
->
-> - **All entries were found and reported independently by us.** Bugs the upstream
->   maintainers already knew about (reported by others) are excluded, as are false
->   positives and rejections we did not file upstream.
-> - Each entry ends with the upstream report ID: the issue where one was filed,
->   otherwise the pull request. No links are given.
-> - **#Confirmed counts every report upstream acted on**, i.e. fixed + fix in progress +
->   confirmed; the `#Fixed` and `#Fixing` columns break it down, and `#Waiting` is a
->   report upstream does not intend to act on.
->
-> **Table of Contents**
->
-> * [**TVM**](#tvm)
-> * [**OpenVINO**](#openvino)
+| Tool stack | Frontend | #Confirmed | #Fixed | #Fixing | #Waiting |
+|---|---|---:|---:|---:|---:|
+| TVM | ONNX | 13 | 12 | 1 | 0 |
+| TVM | PyTorch | 8 | 7 | 1 | 0 |
+| TVM | Paddle | 1 | 1 | 0 | 0 |
+| TVM | OneFlow | 2 | 2 | 0 | 0 |
+| TVM | Keras | 1 | 1 | 0 | 0 |
+| OpenVINO | ONNX | 9 | 3 | 5 | 0 |
+| OpenVINO | PyTorch | 4 | 0 | 4 | 0 |
+| OpenVINO | Paddle | 9 | 0 | 9 | 1 |
+
+- **All entries were found and reported independently by us.** Bugs the upstream
+  maintainers already knew about (reported by others) are excluded, as are false
+  positives and rejections we did not file upstream.
+- Each entry ends with the upstream report ID: the issue where one was filed,
+  otherwise the pull request. No links are given.
+- **#Confirmed counts every report upstream acted on**, i.e. fixed + fix in progress +
+  confirmed; the `#Fixed` and `#Fixing` columns break it down, and `#Waiting` is a
+  report upstream does not intend to act on.
+
+## Contents
+
+* [TVM](#tvm)
+* [OpenVINO](#openvino)
 
 ## TVM
 
