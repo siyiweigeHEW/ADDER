@@ -2,6 +2,18 @@ import os
 import ast
 import re
 
+_IMPL_VERSION_RE = re.compile(r"_impl_v(\d+)")
+
+
+def supported_opset(code_body):
+    """The newest ONNX opset this converter declares, or None when it declares none.
+
+    The frontend dispatches a model to the newest `_impl_vN` not above the model's opset,
+    so this is the newest specification revision the converter implements.
+    """
+    versions = [int(v) for v in _IMPL_VERSION_RE.findall(code_body or "")]
+    return max(versions) if versions else None
+
 
 def preprocess_api_map(ori_map, flag):
     final_map = '{'

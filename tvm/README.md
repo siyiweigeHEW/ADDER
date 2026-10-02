@@ -43,6 +43,21 @@ root, where `common.py` and shared helpers live), and the sibling `utils` / `cor
 `FunctionDef` or module-level `Assign` — a definition, not a call site — and only that
 source segment is appended, so the expanded prompt stays within the token budget.
 
+## Step 4 — documentation lookup
+
+ONNX changes an operator's definition between opsets, so the dump keeps one block per
+version and the block's URL keeps the anchor that names it. The opset to judge against is
+the one the frontend supports — the newest version any of its converters declares, read
+from the converters' `_impl_vN` methods — and Step 4 returns, per operator, the newest
+definition not above it.
+
+The bound is the frontend's, not the individual converter's. A converter that was never
+updated for a later opset is exactly the gap being looked for; judging it by the revision
+its own code was last written for would hide that gap. The torch frontend declares no
+opsets, so there is no version to select on: the newest few definitions are returned
+together instead, which keeps a versioned operator documented rather than judged against
+whichever block the page listed first.
+
 ## Modules
 
 | File | Role |

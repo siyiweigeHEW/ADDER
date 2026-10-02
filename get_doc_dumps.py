@@ -5,6 +5,13 @@ A dump is the operator reference pages of one framework concatenated: each block
 introduced by its URL and separated from the next by a line of 50 `=` characters, which
 is what `doc_retriever.py` parses.
 
+Where a framework's reference page carries one section per specification version — ONNX
+does, one section per opset — the index links to each by anchor, and a block is written
+per version with that anchor kept in its URL. `doc_retriever.py` reads the version off the
+anchor and selects the definition that applies to the opset the frontend supports. Taking
+only the first section of the page instead would put the same text in every block and
+silently collapse the versions into one.
+
 The reference index page of each framework is not shipped — put the one you want into
 `INDEX` below, and read the root README section 2.2(b) first: the dump has to come from
 the version of the specification the frontend under audit implements, or the audit judges
@@ -21,6 +28,7 @@ import argparse
 import os
 import sys
 import time
+from urllib.parse import urlsplit
 
 import requests
 from bs4 import BeautifulSoup
@@ -84,7 +92,22 @@ def collect_links(index_url, matches):
     return sorted(links)
 
 
-def extract_text(soup, selectors):
+def extract_text(soup, selectors, fragment=None):
+    """The block a link points at.
+
+    A reference page for a versioned specification carries one section per version, and
+    the index links to each by anchor. When the link has a fragment, take the section that
+    encloses the anchored element, so each version becomes its own block; otherwise fall
+    back to the first matching selector, which is the whole page (the latest version).
+    """
+    if fragment:
+        anchor = soup.find(id=fragment)
+        if anchor is not None:
+            node = anchor.find_parent("section") or anchor.parent
+            if node is not None:
+                text = node.get_text(separator="\n", strip=True)
+                if text.strip():
+                    return text
     for selector in selectors:
         node = soup.select_one(selector)
         if node is not None:
@@ -108,7 +131,7 @@ def build(name, index_url, out_dir):
             print(f"  [{i}/{len(links)}] {link}")
             page = get_soup(link)
             if page is not None:
-                text = extract_text(page, selectors)
+                text = extract_text(page, selectors, urlsplit(link).fragment or None)
                 if text:
                     f.write(f"\n{SEPARATOR}\nURL: {link}\n{SEPARATOR}\n")
                     f.write(text)

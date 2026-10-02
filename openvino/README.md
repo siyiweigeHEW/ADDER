@@ -40,6 +40,21 @@ A dependency counts as found when brace matching lands on a definition — a cal
 explicitly rejected by looking at the token before the name — and only the balanced block
 is appended, so a single header's worth of text does not enter the prompt.
 
+## Step 4 — documentation lookup
+
+Only the ONNX frontend has versioned semantics, so only it is looked up by version. The
+dump keeps one block per opset, with the anchor naming it kept in the block's URL. The
+opset to judge against is the one the frontend supports — the newest opset named by any of
+its `ONNX_OP` registrations: `OPSET_RANGE(lo, hi)` up to `hi`, `OPSET_IN(n)`, or
+`OPSET_SINCE(n)` from `n` onward — and Step 4 returns, per operator, the newest definition
+not above it.
+
+The bound is the frontend's, not the individual converter's: a converter never updated for
+a later opset is exactly the gap being looked for. The PyTorch and Paddle converters
+register no opsets, so there is no version to select on: the newest few definitions are
+returned together instead, which keeps an operator documented rather than judged against
+whichever block the page listed first.
+
 ## Modules
 
 | File | Role |

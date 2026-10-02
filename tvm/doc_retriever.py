@@ -8,6 +8,13 @@ def _norm(s):
     """Lowercase and remove underscores/spaces for lenient matching."""
     return re.sub(r'[\s_]+', '', s.lower())
 
+# How many recent definitions to offer when there is no opset to select on.
+RECENT_DEFINITIONS = 3
+
+# A per-version section anchor, e.g. `#l-onnx-op-abs-13` (ONNX operator reference pages
+# carry one section per opset).
+_OPSET_ANCHOR_RE = re.compile(r'#l-onnx-op-.*-(\d+)$')
+
 
 # Known cross-framework naming variants (keys and values are NORMALIZED names,
 # i.e. lowercased and stripped of underscores).
@@ -62,8 +69,28 @@ def _parse_url_filename(url_line):
     return temp.strip()
 
 
-def get_doc_from_file(file_path, op_name, brand='onnx'):
-    """Highest-scoring block for `op_name`, preferring an exact word-boundary match."""
+def _parse_anchor_opset(url_line):
+    """The opset a versioned anchor names, or None for a block that carries no version.
+
+    A reference page for a versioned specification has one section per revision, and the
+    dump keeps the anchor in the URL (`...onnx__Abs.html#l-onnx-op-abs-13`), so the version
+    survives into the dump. Anchors that are not per-version (`#l-onnx-doc-abs`) give None.
+    """
+    m = _OPSET_ANCHOR_RE.search(url_line)
+    return int(m.group(1)) if m else None
+
+
+def get_doc_from_file(file_path, op_name, brand='onnx', opset=None):
+    """The definition to judge `op_name` against.
+
+    A block whose URL names an opset is a versioned definition. When `opset` is given --
+    the opset the frontend under audit supports -- the newest versioned definition not
+    above it is returned, which is how a versioned specification applies a definition from
+    the revision that introduced it until the next one. Without a target opset the newest
+    few definitions are returned together, so a versioned operator is still documented
+    instead of being judged against whichever block the page happened to list first. A dump
+    with no versioned block for this operator falls back to the highest-scoring block.
+    """
     if not os.path.exists(file_path):
         return f"Error: {file_path} not found."
 
@@ -77,8 +104,8 @@ def get_doc_from_file(file_path, op_name, brand='onnx'):
     raw_pattern = re.compile(r'\b' + re.escape(target_op) + r'\b', re.IGNORECASE)
     aliases = _aliases(target_op)
 
-    best_idx = -1
-    best_score = -1.0
+    # (block index, match score, the opset this block is the definition of or None)
+    candidates = []
 
     for i in range(1, len(blocks), 2):
         url_line = blocks[i].strip()
@@ -87,28 +114,58 @@ def get_doc_from_file(file_path, op_name, brand='onnx'):
 
         # 1) exact word-boundary match on the raw filename (most precise)
         if raw_pattern.search(url_filename):
-            denom = max(len(target_op), len(url_filename))
-            sim = 1 - (Levenshtein.distance(target_op.lower(), url_filename.lower()) / denom) if denom else 0.0
             score = 1.0 + 0.5  # boundary bonus beats any fuzzy match
-            if score > best_score:
-                best_score, best_idx = score, i
-            continue
-
-        # 2) alias / normalized fuzzy match
-        if not norm_filename:
-            continue
-        for alias in aliases:
-            denom = max(len(alias), len(norm_filename))
-            if denom == 0:
+        else:
+            # 2) alias / normalized fuzzy match
+            if not norm_filename:
                 continue
-            sim = 1 - Levenshtein.distance(alias, norm_filename) / denom
-            if sim >= 0.85:
-                if sim > best_score:
-                    best_score, best_idx = sim, i
-                break
+            score = None
+            for alias in aliases:
+                denom = max(len(alias), len(norm_filename))
+                if denom == 0:
+                    continue
+                sim = 1 - Levenshtein.distance(alias, norm_filename) / denom
+                if sim >= 0.85:
+                    score = sim
+                    break
+            if score is None:
+                continue
 
-    if best_idx != -1:
-        url_line = blocks[best_idx].strip()
-        return f"Source URL: {url_line}\n(Similarity Score: {best_score:.2f})\n{blocks[best_idx + 1].strip()}"
+        candidates.append((i, score, _parse_anchor_opset(url_line)))
+
+    chosen = []
+    if opset is not None:
+        # The newest definition not above the opset the frontend supports applies to it.
+        applicable = [c for c in candidates if c[2] is not None and c[2] <= opset]
+        if applicable:
+            best = max(applicable, key=lambda c: (c[2], c[1]))
+            chosen = [(best[0], best[1])]
+    if not chosen:
+        # No opset to select on, so offer the newest definitions rather than whichever
+        # block happens to come first -- an operator with versioned definitions would
+        # otherwise be judged against whatever version the page listed first.
+        recent = []
+        seen = set()
+        for idx, score, anchor in sorted(candidates, key=lambda c: c[2] or 0, reverse=True):
+            if anchor is None:
+                continue
+            body = blocks[idx + 1].strip()
+            if body in seen:
+                continue  # a dump that recorded one section per operator repeats itself
+            seen.add(body)
+            recent.append((idx, score))
+            if len(recent) == RECENT_DEFINITIONS:
+                break
+        chosen = list(reversed(recent))
+    if not chosen and candidates:
+        best = max(candidates, key=lambda c: c[1])
+        chosen = [(best[0], best[1])]
+
+    if chosen:
+        return "\n\n".join(
+            f"Source URL: {blocks[idx].strip()}\n"
+            f"(Similarity Score: {score:.2f})\n{blocks[idx + 1].strip()}"
+            for idx, score in chosen
+        )
 
     return f"Warning: No confident documentation found for operator '{op_name}' in {file_path}"

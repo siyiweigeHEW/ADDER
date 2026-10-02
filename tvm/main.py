@@ -11,10 +11,9 @@ Workflow:
   5) Generate the final report
 """
 import os
-import Levenshtein
 from datetime import datetime
 
-from extract_function import get_all_front_converters
+from extract_function import get_all_front_converters, supported_opset
 from consistency_checker import compare_code_consistency
 from doc_analyzer import analyze_with_docs, parse_final_verdict
 from doc_retriever import get_doc_from_file
@@ -47,16 +46,11 @@ def find_lcsubstr(s1, s2):
     return s1[p - mmax:p]
 
 
-def cal_text_sim(t1, t2, strategy='lcs'):
+def cal_text_sim(t1, t2):
+    """Equation (1): the longest common substring over the longer normalized name."""
     t1 = t1.lower().replace('_', '')
     t2 = t2.lower().replace('_', '')
-    if strategy == 'ed':
-        dis = Levenshtein.distance(t1, t2)
-        text_sim = 1 - dis / max(len(t1), len(t2))
-    elif strategy == 'lcs':
-        dis = len(find_lcsubstr(t1, t2))
-        text_sim = dis / max(len(t1), len(t2))
-    return text_sim
+    return len(find_lcsubstr(t1, t2)) / max(len(t1), len(t2))
 
 
 def get_similar_op_with_text_sim(op_name, target_dict):
@@ -71,6 +65,18 @@ def get_similar_op_with_text_sim(op_name, target_dict):
             max_sim_op = target_op
     return max_sim_op, max_sim
 
+
+
+def frontend_opset(converter_bodies):
+    """The opset this frontend supports: the newest version any of its converters declares.
+
+    An operator is judged against the newest definition the frontend supports, not against
+    the revision its own converter was last written for. A converter that was never updated
+    for a later opset is precisely the gap the audit looks for, and judging it by its own
+    older revision would hide the gap instead of reporting it.
+    """
+    versions = [v for v in (supported_opset(b) for b in converter_bodies.values()) if v]
+    return max(versions) if versions else None
 
 
 def main():
@@ -116,6 +122,8 @@ def main():
     print(f"\n[{datetime.now().strftime('%H:%M:%S')}] [Step 1/5] Extracting frontend converters...")
     all_front_converter = get_all_front_converters(base_dir, target_fronts=['onnx', 'torch'])
     all_front_name_list = list(all_front_converter.keys())
+    front_opset_map = {name: frontend_opset(v[0])
+                       for name, v in all_front_converter.items()}
 
     for k, v in all_front_converter.items():
         print(f"\n" + "*" * 20 + f" Processing {k} frontend " + "*" * 20)
@@ -130,7 +138,7 @@ def main():
                     op_name, all_front_converter[target_front][1]
                 )
 
-                if sim_score >= 0.85:
+                if sim_score > 0.85:
                     total_matched_pairs += 1
 
                     similar_api_name = all_front_converter[target_front][1][similar_op_name]
@@ -160,6 +168,8 @@ def main():
                     target_func_body, tgt_dep_info = expand_code_body(
                         target_func_body, target_front, front_op_dir_map[target_front]
                     )
+                    source_opset = front_opset_map[k]
+                    target_opset = front_opset_map[target_front]
                     if src_dep_info or tgt_dep_info:
                         print(f"    [EXPAND] Code expanded: {k}=[{src_dep_info}], "
                               f"{target_front}=[{tgt_dep_info}]")
@@ -180,8 +190,11 @@ def main():
                             doc_path_k = doc_map.get(k, onnx_doc_path)
                             doc_path_target = doc_map.get(target_front, onnx_doc_path)
 
-                            doc_content_k = get_doc_from_file(doc_path_k, op_name)
-                            doc_content_target = get_doc_from_file(doc_path_target, similar_op_name)
+                            doc_content_k = get_doc_from_file(doc_path_k, op_name,
+                                                              opset=source_opset)
+                            doc_content_target = get_doc_from_file(doc_path_target,
+                                                                   similar_op_name,
+                                                                   opset=target_opset)
 
                             if doc_content_k.startswith("Warning:") or doc_content_k.startswith("Error:") or \
                                doc_content_target.startswith("Warning:") or doc_content_target.startswith("Error:"):
@@ -254,7 +267,7 @@ def main():
     print("=" * 60)
     print(f"  Model: {global_model.model_name}")
     print("-" * 60)
-    print(f"1. Total synonymous operator pairs (Sim >= 0.85):        {total_matched_pairs}")
+    print(f"1. Total synonymous operator pairs (Sim > 0.85):        {total_matched_pairs}")
     print(f"2. Pairs compared successfully:                         {total_matched_pairs - skipped_count}")
     print("-" * 60)
     print(f"   ✅ Logically equivalent (Equivalent):                {equivalent_count}")
