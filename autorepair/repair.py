@@ -181,24 +181,39 @@ def patch_path(src_file):
     return src_file.lstrip("/")
 
 
+def patched_source(original, fixed, src_file=None):
+    """The real source file with the fix written into it, or None when the input block is
+    not found there. This is the translation unit the syntax check parses.
+    """
+    if not (src_file and os.path.isfile(src_file)):
+        return None
+    original = original.strip("\n") + "\n"
+    fixed = fixed.strip("\n") + "\n"
+    with open(src_file, encoding="utf-8") as f:
+        src = f.read()
+    span = find_block(src, original)
+    if span is None:
+        return None
+    src_lines = src.splitlines(True)
+    start, end = span
+    return "".join(src_lines[:start] + fixed.splitlines(True) + src_lines[end:])
+
+
 def build_fix_patch(original, fixed, src_file=None):
     """Returns (diff, anchored). Anchored means the fix was written back into the real
     source file, so the diff carries real line numbers; otherwise it is snippet-local.
     """
     original = original.strip("\n") + "\n"
     fixed = fixed.strip("\n") + "\n"
-    if src_file and os.path.isfile(src_file):
+    new_src = patched_source(original, fixed, src_file)
+    if new_src is not None:
         with open(src_file, encoding="utf-8") as f:
             src = f.read()
-        span = find_block(src, original)
-        if span is not None:
-            src_lines = src.splitlines(True)
-            start, end = span
-            new_src = "".join(src_lines[:start] + fixed.splitlines(True) + src_lines[end:])
-            path = patch_path(src_file)
-            return ("".join(difflib.unified_diff(
-                src.splitlines(True), new_src.splitlines(True),
-                fromfile="a/" + path, tofile="b/" + path, n=3)), True)
+        path = patch_path(src_file)
+        return ("".join(difflib.unified_diff(
+            src.splitlines(True), new_src.splitlines(True),
+            fromfile="a/" + path, tofile="b/" + path, n=3)), True)
+    if src_file:
         print(f"[warn] original code block matching the input not found in source file "
               f"{src_file}; falling back to a snippet-level diff")
     return ("".join(difflib.unified_diff(
@@ -219,13 +234,19 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="only build/print the prompt; "
                                                            "no LLM call")
     ap.add_argument("--no-verify", action="store_true",
-                    help="skip API verification (existence check + misuse review + "
+                    help="skip verification (code validity + semantic correctness + "
                          "correction loop)")
     ap.add_argument("--no-review", action="store_true",
                     help="only run the static API existence check; skip the LLM misuse "
                          "review/correction")
-    ap.add_argument("--verify-rounds", type=int, default=2,
-                    help="max API correction rounds (default 2)")
+    ap.add_argument("--no-semantic", action="store_true",
+                    help="skip the semantic correctness check (the patched behaviour vs "
+                         "the source requirement); it also stays off when no "
+                         "documentation is supplied")
+    ap.add_argument("--verify-rounds", type=int, default=api_check.DEFAULT_ROUNDS,
+                    help="max correction rounds after the initial candidate "
+                         f"(default {api_check.DEFAULT_ROUNDS}, i.e. 5 patch-generation "
+                         "attempts in total)")
     ap.add_argument("--api-root", help="source tree scanned by the API existence check "
                                        "(defaults to the backend's own environment "
                                        "variable: TVM_PYTHON_ROOT / OPENVINO_SRC_ROOT)")
@@ -276,12 +297,15 @@ def main():
     check_attr_accessors(code, fixed_code)
 
     if not args.no_verify:
-        print("\n[api_check] starting API verification (existence check + LLM misuse "
-              "review + correction loop)...")
+        print("\n[api_check] starting verification (code validity check + semantic "
+              "correctness check + correction loop)...")
         fixed_code, api_report = api_check.run_verification(
             code, fixed_code, system,
             {"rounds": args.verify_rounds, "no_review": args.no_review,
+             "no_semantic": args.no_semantic, "requirement": doc, "cause": cause,
              "backend": backend, "api_root": args.api_root,
+             "frontend": frontend, "src_file": src_file,
+             "render_patched": lambda fixed: patched_source(code, fixed, src_file),
              "code_lang": fence_lang(backend)},
         )
         with open(os.path.join(outdir, "api_check.md"), "w", encoding="utf-8") as f:
@@ -302,7 +326,8 @@ def main():
     print(f"  fixed.py     bytes={len(fixed_code.encode('utf-8'))}   (code fixed by the LLM)")
     print(f"  fix.patch    bytes={len(patch.encode('utf-8'))}  applyable={anchored}")
     if not args.no_verify:
-        print("  api_check.md  API verification report (existence/misuse/correction rounds)")
+        print("  api_check.md  verification report (code validity / semantic correctness "
+              "/ correction rounds)")
     if not anchored:
         print("  [warn] fix.patch is not anchored to the real source file (--src-file "
               "missing or the snippet does not match); line numbers are snippet-local "

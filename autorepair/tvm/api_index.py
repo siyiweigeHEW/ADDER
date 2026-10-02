@@ -28,6 +28,15 @@ REVIEW_SYSTEM = (
     "APIs are used correctly. Return only the JSON object."
 )
 
+SEMANTIC_SYSTEM = (
+    "You are a meticulous TVM Relax frontend developer reviewing whether a patch makes a "
+    "converter satisfy the operator semantics its source framework defines. Return only "
+    "the JSON object."
+)
+
+# Which syntax checker parses a candidate translation unit (see syntax_check.py).
+SYNTAX = {"checker": "python"}
+
 # LLM-facing API name -> relative directory in the tvm source tree.
 SEED_ALIASES = [
     ("relax.op", "relax/op"),

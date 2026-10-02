@@ -34,6 +34,28 @@ REVIEW_SYSTEM = (
     "frontend helper APIs are used correctly. Return only the JSON object."
 )
 
+SEMANTIC_SYSTEM = (
+    "You are a meticulous OpenVINO frontend developer reviewing whether a patch makes a "
+    "converter satisfy the operator semantics its source framework defines. Return only "
+    "the JSON object."
+)
+
+# Include roots a candidate translation unit is parsed against. Paths are relative to the
+# checkout root, `{frontend}` is the frontend's short name, and absent ones are skipped.
+SYNTAX = {
+    "checker": "cpp",
+    "std": "c++17",
+    "include_dirs": (
+        "src/core/include",
+        "src/frontends/common/include",
+        "src/frontends/common_translators/include",
+        "src/common/transformations/include",
+        "src/common/util/include",
+        "src/frontends/{frontend}/include",
+        "src/frontends/{frontend}/src",
+    ),
+}
+
 # Namespaces whose enumeration is complete, so a missing leaf is authoritative.
 # `ov.op.*` comes from one header per operator and the frontend helper namespaces
 # from every source file under them; the aggregate namespaces (ov.core, ...) only

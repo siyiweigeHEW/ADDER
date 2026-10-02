@@ -164,7 +164,8 @@ The OpenVINO version differs in exactly four places:
 
 ## 5. Repair prompts
 
-Three more prompts, all in `autorepair/`.
+Four more prompts, all in `autorepair/`. The second and third are the two complementary
+checks a candidate must pass before it is returned.
 
 ### 5.1 Fix prompt
 
@@ -250,20 +251,75 @@ block found at its definition site, the model answers with JSON:
 Its system prompt is `You are a meticulous {backend} frontend developer reviewing whether
 <the APIs a patch calls> are used correctly. Return only the JSON object.`
 
-### 5.3 Correction prompt
+### 5.3 Semantic correctness review
 
-Sent when the review or the existence check found a problem. Each problem is rendered as
-either `❌ **nonexistent API**: <name> -- <where>` or `⚠ **suspected misuse**: <name> --
-<issue>` before being listed.
+The second of the two checks a candidate must pass, and the only user of the source
+requirement. `{requirement}` is the documentation supplied for the fix and `{cause_block}`
+is the diagnosis;
 
-    # Fix the API problems in the previous repair round (autorepair automatic
+    # Semantic correctness review (autorepair automatic verification)
+
+    A patch was generated to repair the violation below. Judge whether the patched code now
+    satisfies the source operator definition it was meant to conform to.
+
+    ## Diagnosed violation
+    {cause_block}
+
+    ## Source requirement (the behaviour the patched code must satisfy)
+    {requirement}
+
+    ## Original code (before the patch)
+    ```{code_lang}
+    {original}
+    ```
+
+    ## Patched code (the candidate under review)
+    ```{code_lang}
+    {fixed}
+    ```
+
+    ## Judging criteria (any hit -> satisfied=false)
+    1. The patched behaviour still violates the requirement above;
+    2. The patch touches only the area the diagnosis named but does not restore the required
+       behaviour;
+    3. The patch introduces a new conflict between the patched behaviour and the requirement;
+    4. The patch suppresses the symptom without satisfying the requirement.
+
+    Do not report a violation for behaviour the requirement does not cover, and do not
+    restate code-validity problems (nonexistent or misused APIs) here.
+
+    ## Output (strict JSON, only JSON)
+    ```json
+    {"satisfied": true, "feedback": "", "conflicts": []}
+    ```
+
+Its system prompt is `You are a meticulous {backend} frontend converter developer
+reviewing whether a patch makes a converter satisfy the operator semantics its source
+framework defines. Return only the JSON object.`
+
+The check runs only when a source requirement was supplied; a candidate passes it only
+when the review answers `satisfied: true`. An unparsable review is reported as
+inconclusive and stops the loop rather than being counted as a failure.
+
+### 5.4 Correction prompt
+
+Sent when either check found a problem. Each code validity problem is rendered as
+`❌ **nonexistent API**: <name> -- <where>`, `⚠ **suspected misuse**: <name> -- <issue>` or
+`❌ **syntax error**: <diagnostics>` before being listed; the unresolved-requirement section
+is present only when the semantic review rejected the candidate. The syntax check itself is
+a tool invocation, not a prompt, so it has no template here.
+
+    # Fix the problems in the previous repair round (autorepair automatic
     verification feedback)
 
-    Your previous repair round has the following API problems. Fix each one, then re-output
-    the revised **complete code**.
+    Your previous repair round has the problems below. Fix each one, then re-output the
+    revised **complete code**.
 
     ## Detected problems
     {issues_text}
+
+    ## Unresolved requirement (semantic review)
+    {semantic_feedback}
 
     ## Original code (the fix scope; the output must stay aligned to this scope, keep every
     other line byte-for-byte)
@@ -285,6 +341,8 @@ either `❌ **nonexistent API**: <name> -- <where>` or `⚠ **suspected misuse**
        already used in the codebase.
     4. For a misused API: fix the parameter types/count/semantics or the return handling
        per the suggestion.
+    5. If an unresolved requirement is listed above, change the behaviour so that the patched
+       code satisfies it.
 
     ## Output format
     A one-sentence explanation outside the code block + a ```{code_lang} code block
