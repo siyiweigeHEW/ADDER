@@ -10,7 +10,7 @@ Two audit pipelines and one repair component are shipped:
 |---|---|---|---|
 | `tvm/` | TVM Relax | Python | onnx / torch |
 | `openvino/` | OpenVINO | C++ | onnx / torch / paddle |
-| `autorepair/` | repair and API verification, for both tool stacks | | |
+| `autorepair/` | repair and verification, for both tool stacks | | |
 
 ## Contents
 
@@ -20,7 +20,7 @@ Two audit pipelines and one repair component are shipped:
 | [`PROMPTS.md`](PROMPTS.md) | every prompt the tool sends, verbatim |
 | [`tvm/README.md`](tvm/README.md) | the TVM pipeline in detail |
 | [`openvino/README.md`](openvino/README.md) | the OpenVINO pipeline in detail |
-| [`autorepair/README.md`](autorepair/README.md) | the repair component and its API verification |
+| [`autorepair/README.md`](autorepair/README.md) | the repair component and its two verification checks |
 | [`bugs.md`](bugs.md) | the bugs the audit found and reported upstream, with links |
 
 ---
@@ -56,6 +56,18 @@ frontends reach opset 23 (TVM) and opset 19 (OpenVINO) — read your own off the
 `_impl_vN` method in the frontend, or the `OPSET_RANGE(lo, hi)` a converter registers with.
 Torch and Paddle have no opset, so take the framework release the frontend was written
 against.
+
+Where the specification is versioned, the dump has to keep **every** versioned section:
+`get_doc_dumps.py` writes one block per opset and keeps the anchor in the block's URL, and
+Step 4 then picks, per operator, the newest definition not above the opset the frontend
+supports — the highest `_impl_vN` any TVM converter declares, or the highest `OPSET_RANGE` /
+`OPSET_IN` / `OPSET_SINCE` any OpenVINO converter registers. The bound is the frontend's
+rather than the individual converter's on purpose: a converter that was never updated for a
+later opset is a gap the audit is looking for, and judging it by its own older revision
+would hide it. Where there is no opset to select on — a framework without versioned
+semantics, or an operator the frontend declares no version for — the newest few definitions
+are retrieved together rather than leaving the operator undocumented. A dump with a single
+section per operator leaves the audit judging every operator against that one version.
 
 `get_doc_dumps.py` builds them, given the reference index page to walk (a placeholder in
 that script). Its dependencies are separate, since only this one-off script needs them:
@@ -125,7 +137,8 @@ in the next section. The bug candidates of a run are the lines with `doc_match =
 
 Each case goes to `repairs/{backend}_{frontend}_{op}/` — `prompt.txt`, and from a real run
 `response.md`, `fixed.py`, `fix.patch` and, unless `--no-verify` was given, `api_check.md`.
-Verification is on by default and needs a source tree to scan:
+A candidate must pass two checks, code validity and semantic correctness; the first needs a
+source tree to scan:
 
     export TVM_PYTHON_ROOT=/path/to/tvm/python/tvm       # for --backend TVM
     export OPENVINO_SRC_ROOT=/path/to/openvino           # for --backend OPENVINO
